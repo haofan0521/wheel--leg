@@ -6,21 +6,15 @@
 #include "system/app_runtime.h"
 
 namespace {
-
-// 串口用于启动日志与早期调试输出。
 constexpr uint32_t kSerialBaudRate = 115200;
-
 }  // namespace
 
 void setup() {
   Serial.begin(kSerialBaudRate);
   delay(300);
 
-  Serial.println();
-  Serial.println("Wheel-leg robot booting...");
 
   // 启动双核运行时框架。
-  // 控制链路与 Wi-Fi/调试链路在此之后分任务运行。
   app_runtime::begin();
 }
 

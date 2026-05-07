@@ -1,29 +1,26 @@
-#include "system/wifi_debug_server.h"
+﻿#include "system/wifi_debug_server.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
-
 #include <cstring>
 
 #include "config/wifi_debug_config.h"
 #include "system/runtime_state.h"
 
 namespace {
-
 bool hasConfiguredStationCredentials() {
-  // 仍为默认占位符时，视为用户尚未配置真实热点信息。
   return std::strlen(wifi_debug_config::kStaSsid) > 0 &&
          std::strcmp(wifi_debug_config::kStaSsid, "YOUR_PHONE_WIFI_SSID") != 0;
 }
-
 String wifiModeToString(const bool station_connected) {
   return station_connected ? "STA" : "AP";
 }
-
-String boolToLabel(const bool value, const char* true_label, const char* false_label) {
-  return value ? String(true_label) : String(false_label);
+float clampFloat(const float value, const float min_value, const float max_value) {
+  if (value < min_value) return min_value;
+  if (value > max_value) return max_value;
+  return value;
 }
-
+uint32_t g_motor_command_sequence = 0;
 }  // namespace
 
 WiFiDebugServer& WiFiDebugServer::instance() {
@@ -31,320 +28,325 @@ WiFiDebugServer& WiFiDebugServer::instance() {
   return server;
 }
 
-WiFiDebugServer::WiFiDebugServer()
-    : server_(80), started_(false), stationConnected_(false) {}
+WiFiDebugServer::WiFiDebugServer() : server_(80), started_(false), stationConnected_(false) {}
 
 void WiFiDebugServer::begin() {
-  if (started_) {
-    return;
-  }
-
+  if (started_) return;
   WiFi.persistent(false);
   WiFi.setAutoReconnect(true);
-
-  // 启动前先注册网页与接口路由。
   configureRoutes();
-
-  // 优先尝试连接手机热点或外部 Wi-Fi。
   stationConnected_ = connectToStation();
-  if (!stationConnected_) {
-    // 连接失败后自动切换为 AP 模式，方便现场调试。
-    startFallbackAccessPoint();
-  }
-
+  if (!stationConnected_) startFallbackAccessPoint();
   server_.begin();
   started_ = true;
-
-  Serial.println();
-  Serial.println("[WiFi] Debug server started");
-  Serial.print("[WiFi] Mode: ");
-  Serial.println(wifiModeToString(stationConnected_));
-  Serial.print("[WiFi] IP: ");
-  Serial.println(currentIpString());
 }
 
 void WiFiDebugServer::loop() {
-  if (!started_) {
-    return;
-  }
-
+  if (!started_) return;
   server_.handleClient();
 }
 
 void WiFiDebugServer::configureRoutes() {
   server_.on("/", HTTP_GET, [this]() { handleRoot(); });
   server_.on("/api/status", HTTP_GET, [this]() { handleStatus(); });
+  server_.on("/api/attitude", HTTP_GET, [this]() { handleAttitude(); });
   server_.on("/api/restart", HTTP_POST, [this]() { handleRestart(); });
-  server_.onNotFound([this]() {
-    server_.send(404, "text/plain", "Not Found");
-  });
+  server_.on("/api/motor", HTTP_POST, [this]() { handleMotorCommand(); });
+  server_.onNotFound([this]() { server_.send(404, "text/plain", "Not Found"); });
 }
 
 bool WiFiDebugServer::connectToStation() {
-  if (!hasConfiguredStationCredentials()) {
-    Serial.println("[WiFi] Station credentials are not configured, starting AP fallback");
-    return false;
-  }
-
+  if (!hasConfiguredStationCredentials()) return false;
   WiFi.mode(WIFI_MODE_STA);
   WiFi.setHostname(wifi_debug_config::kHostname);
   WiFi.begin(wifi_debug_config::kStaSsid, wifi_debug_config::kStaPassword);
-
-  // 在设定超时时间内轮询连接状态。
   const uint32_t start_ms = millis();
-  while (WiFi.status() != WL_CONNECTED &&
-         millis() - start_ms < wifi_debug_config::kConnectTimeoutMs) {
+  while (WiFi.status() != WL_CONNECTED && millis() - start_ms < wifi_debug_config::kConnectTimeoutMs) {
     delay(250);
-    Serial.print(".");
   }
-
-  Serial.println();
   return WiFi.status() == WL_CONNECTED;
 }
 
 void WiFiDebugServer::startFallbackAccessPoint() {
-  // 彻底断开 STA 状态后再切到 AP，避免模式残留。
   WiFi.disconnect(true, true);
   delay(100);
   WiFi.mode(WIFI_MODE_AP);
-  WiFi.softAP(wifi_debug_config::kFallbackApSsid,
-              wifi_debug_config::kFallbackApPassword);
+  WiFi.softAP(wifi_debug_config::kFallbackApSsid, wifi_debug_config::kFallbackApPassword);
 }
 
-void WiFiDebugServer::handleRoot() {
-  server_.send(200, "text/html; charset=utf-8", buildDebugPage());
-}
-
-void WiFiDebugServer::handleStatus() {
-  server_.send(200, "application/json; charset=utf-8", buildStatusJson());
-}
-
+void WiFiDebugServer::handleRoot() { server_.send(200, "text/html; charset=utf-8", buildDebugPage()); }
+void WiFiDebugServer::handleStatus() { server_.send(200, "application/json; charset=utf-8", buildStatusJson()); }
+void WiFiDebugServer::handleAttitude() { server_.send(200, "application/json; charset=utf-8", buildAttitudeJson()); }
 void WiFiDebugServer::handleRestart() {
-  server_.send(200, "application/json; charset=utf-8",
-               "{\"ok\":true,\"message\":\"Device will restart\"}");
-  delay(200);
-  ESP.restart();
+  server_.send(200, "application/json; charset=utf-8", "{\"ok\":true,\"message\":\"Device will restart\"}");
+  delay(200); ESP.restart();
+}
+
+void WiFiDebugServer::handleMotorCommand() {
+  auto command = runtime_state::leftMotorCommand();
+  command.stop = false;
+  command.has_enable = false;
+  command.has_velocity_target = false;
+  command.has_voltage_limit = false;
+  command.has_open_loop = false;
+
+  if (server_.hasArg("mode")) {
+    const String mode = server_.arg("mode");
+    command.open_loop = mode == "open" || mode == "open_loop" || mode == "1";
+    command.has_open_loop = true;
+  }
+
+  if (server_.hasArg("enable")) {
+    command.enable = server_.arg("enable").toInt() != 0;
+    command.has_enable = true;
+  }
+  if (server_.hasArg("stop")) {
+    command.stop = true;
+    command.enable = false;
+    command.has_enable = true;
+    command.target_velocity = 0.0f;
+    command.has_velocity_target = true;
+  }
+  if (server_.hasArg("v")) {
+    command.target_velocity = clampFloat(server_.arg("v").toFloat(), -20.0f, 20.0f);
+    command.has_velocity_target = true;
+    command.enable = true;
+    command.has_enable = true;
+  }
+  if (server_.hasArg("l")) {
+    command.voltage_limit = clampFloat(server_.arg("l").toFloat(), 0.5f, 8.0f);
+    command.has_voltage_limit = true;
+  }
+
+  command.updated_ms = millis();
+  command.sequence = ++g_motor_command_sequence;
+  runtime_state::updateLeftMotorCommand(command);
+  server_.send(200, "application/json; charset=utf-8", "{\"ok\":true}");
 }
 
 String WiFiDebugServer::buildDebugPage() const {
-  // 页面保持轻量，重点展示双核任务框架与系统运行状态。
-  String html = R"HTML(
+  String html = R"RAW(
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Wheel-Leg Runtime Debug</title>
+  <title>Wheel-Leg Debug</title>
   <style>
-    :root {
-      color-scheme: light;
-      --bg: #f3f6fb;
-      --panel: #ffffff;
-      --line: #d8e1ef;
-      --text: #1b2430;
-      --muted: #5f6b7a;
-      --accent: #0b7dda;
-      --accent-2: #0f5fb5;
-      --shadow: 0 16px 40px rgba(15, 35, 95, 0.10);
-    }
     * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-      background:
-        radial-gradient(circle at top left, rgba(11,125,218,0.10), transparent 32%),
-        linear-gradient(180deg, #f7f9fd 0%, var(--bg) 100%);
-      color: var(--text);
-    }
-    .wrap {
-      width: min(1100px, calc(100% - 32px));
-      margin: 32px auto;
-    }
-    .hero {
-      background: linear-gradient(135deg, #0b7dda 0%, #0f5fb5 100%);
-      color: #fff;
-      border-radius: 24px;
-      padding: 28px;
-      box-shadow: var(--shadow);
-    }
-    .hero h1 {
-      margin: 0 0 10px;
-      font-size: 30px;
-    }
-    .hero p {
-      margin: 0;
-      line-height: 1.6;
-      opacity: 0.9;
-    }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 16px;
-      margin-top: 20px;
-    }
-    .card {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 20px;
-      padding: 18px;
-      box-shadow: var(--shadow);
-    }
-    .label {
-      font-size: 13px;
-      color: var(--muted);
-      margin-bottom: 10px;
-    }
-    .value {
-      font-size: 22px;
-      font-weight: 700;
-      word-break: break-word;
-    }
-    .actions {
-      display: flex;
-      gap: 12px;
-      flex-wrap: wrap;
-      margin-top: 20px;
-    }
-    button {
-      border: 0;
-      border-radius: 999px;
-      padding: 12px 18px;
-      background: var(--accent);
-      color: #fff;
-      font-size: 14px;
-      cursor: pointer;
-    }
-    button.secondary {
-      background: #eaf1fb;
-      color: var(--accent-2);
-    }
-    .footer {
-      margin-top: 18px;
-      color: var(--muted);
-      font-size: 13px;
-      line-height: 1.6;
-    }
-    code {
-      background: rgba(11,125,218,0.08);
-      padding: 2px 6px;
-      border-radius: 6px;
-    }
+    body { font-family: Arial, sans-serif; background: #f0f2f5; color: #1f2933; text-align: center; padding: 20px; margin: 0; }
+    .layout { display: flex; flex-wrap: wrap; gap: 20px; justify-content: center; align-items: flex-start; }
+    .card { background: white; padding: 24px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); width: min(100%, 430px); }
+    button { padding: 15px 30px; font-size: 18px; border: none; border-radius: 8px; margin: 10px; cursor: pointer; color: white; display: inline-block; width: 40%; }
+    .btn-fwd { background: #4caf50; }
+    .btn-rev { background: #2196f3; }
+    .btn-stop { background: #f44336; width: 85%; }
+    .input-grp { margin: 20px 0; }
+    .status { margin-top: 20px; font-size: 14px; color: #666; }
+    .scene { width: 220px; height: 220px; margin: 30px auto; perspective: 700px; display: flex; align-items: center; justify-content: center; }
+    .cube { position: relative; width: 120px; height: 120px; transform-style: preserve-3d; transform: rotateX(0deg) rotateY(0deg) rotateZ(0deg); transition: transform 80ms linear; }
+    .face { position: absolute; width: 120px; height: 120px; border: 2px solid rgba(255,255,255,0.8); display: flex; align-items: center; justify-content: center; font-weight: bold; color: white; text-shadow: 0 1px 2px rgba(0,0,0,0.35); opacity: 0.92; }
+    .front { background: #2563eb; transform: translateZ(60px); }
+    .back { background: #1d4ed8; transform: rotateY(180deg) translateZ(60px); }
+    .right { background: #16a34a; transform: rotateY(90deg) translateZ(60px); }
+    .left { background: #15803d; transform: rotateY(-90deg) translateZ(60px); }
+    .top { background: #f97316; transform: rotateX(90deg) translateZ(60px); }
+    .bottom { background: #dc2626; transform: rotateX(-90deg) translateZ(60px); }
+    .attitude-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 16px; }
+    .attitude-item { background: #f8fafc; border-radius: 8px; padding: 10px 6px; }
+    .attitude-label { color: #64748b; font-size: 12px; }
+    .attitude-value { color: #0f172a; font-size: 18px; font-weight: bold; margin-top: 4px; }
+    .fresh { color: #16a34a; }
+    .stale { color: #dc2626; }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <section class="hero">
-      <h1>Wheel-Leg Runtime Debug</h1>
-      <p>当前已切换为双核任务框架：控制链路与 Wi-Fi/调试链路分核运行。网页仅展示系统状态快照，不直接参与实时控制。</p>
-    </section>
+  <div class="layout">
+    <div class="card">
+      <h2>左轮控制调试</h2>
 
-    <section class="grid">
-      <article class="card"><div class="label">联网模式</div><div class="value" id="mode">--</div></article>
-      <article class="card"><div class="label">Wi-Fi 名称</div><div class="value" id="ssid">--</div></article>
-      <article class="card"><div class="label">设备 IP</div><div class="value" id="ip">--</div></article>
-      <article class="card"><div class="label">信号强度</div><div class="value" id="rssi">--</div></article>
-      <article class="card"><div class="label">运行时间</div><div class="value" id="uptime">--</div></article>
-      <article class="card"><div class="label">空闲堆内存</div><div class="value" id="heap">--</div></article>
-      <article class="card"><div class="label">控制任务核心</div><div class="value" id="controlCore">--</div></article>
-      <article class="card"><div class="label">服务任务核心</div><div class="value" id="serviceCore">--</div></article>
-      <article class="card"><div class="label">控制任务计数</div><div class="value" id="controlLoops">--</div></article>
-      <article class="card"><div class="label">服务任务计数</div><div class="value" id="serviceLoops">--</div></article>
-      <article class="card"><div class="label">电驱使能状态</div><div class="value" id="driveEnabled">--</div></article>
-      <article class="card"><div class="label">电驱故障电平</div><div class="value" id="driveFault">--</div></article>
-      <article class="card"><div class="label">控制周期</div><div class="value" id="controlPeriod">--</div></article>
-      <article class="card"><div class="label">服务周期</div><div class="value" id="servicePeriod">--</div></article>
-      <article class="card"><div class="label">芯片型号</div><div class="value" id="chip">--</div></article>
-      <article class="card"><div class="label">SDK 版本</div><div class="value" id="sdk">--</div></article>
-    </section>
+      <div class="input-grp">
+        <button onclick="setMode('open')" style="background:#8b5cf6;">开环模式</button>
+        <button onclick="setMode('closed')" style="background:#0f766e;">闭环 FOC</button>
+      </div>
 
-    <div class="actions">
-      <button onclick="refreshStatus()">刷新状态</button>
-      <button class="secondary" onclick="restartDevice()">重启设备</button>
+      <div class="input-grp">
+        <label>目标速度 (rad/s): </label>
+        <input type="number" id="speed" value="5.0" step="1.0" style="font-size: 18px; width: 80px; text-align: center;">
+      </div>
+
+      <button class="btn-fwd" onclick="setSpeed(document.getElementById('speed').value)">正转</button>
+      <button class="btn-rev" onclick="setSpeed(-document.getElementById('speed').value)">反转</button>
+      <button class="btn-stop" onclick="emergencyStop()">急停</button>
+
+      <hr style="margin: 20px 0; border: 0; border-top: 1px solid #ddd;">
+
+      <div class="input-grp">
+        <label>电压限制 (V): </label>
+        <input type="number" id="voltage" value="6.0" step="0.5" style="font-size: 14px; width: 60px; text-align: center;">
+        <button onclick="setVoltage()" style="width: auto; padding: 5px 10px; font-size: 14px; background: #607d8b;">应用</button>
+      </div>
+
+      <div class="status" id="uptime">连接中...</div>
+      <div class="status" id="motorStatus">左轮状态: --</div>
     </div>
 
-    <div class="footer">
-      首次使用请修改 <code>include/config/wifi_debug_config.h</code> 中的手机 Wi-Fi 名称和密码。<br>
-      后续 FOC、编码器和 IMU 的实时逻辑应继续放在控制任务中，网页仅用于调试和遥测。
+    <div class="card">
+      <h2>IMU 姿态显示</h2>
+      <div class="scene">
+        <div class="cube" id="cube">
+          <div class="face front">FRONT</div>
+          <div class="face back">BACK</div>
+          <div class="face right">RIGHT</div>
+          <div class="face left">LEFT</div>
+          <div class="face top">TOP</div>
+          <div class="face bottom">BOTTOM</div>
+        </div>
+      </div>
+      <div class="attitude-grid">
+        <div class="attitude-item"><div class="attitude-label">Pitch</div><div class="attitude-value" id="pitch">--</div></div>
+        <div class="attitude-item"><div class="attitude-label">Roll</div><div class="attitude-value" id="roll">--</div></div>
+        <div class="attitude-item"><div class="attitude-label">Yaw</div><div class="attitude-value" id="yaw">--</div></div>
+      </div>
+      <div class="status" id="attitudeStatus">等待 IMU...</div>
     </div>
   </div>
 
   <script>
-    async function refreshStatus() {
-      const response = await fetch('/api/status');
-      const data = await response.json();
-      document.getElementById('mode').textContent = data.mode;
-      document.getElementById('ssid').textContent = data.ssid;
-      document.getElementById('ip').textContent = data.ip;
-      document.getElementById('rssi').textContent = data.rssi;
-      document.getElementById('uptime').textContent = data.uptime;
-      document.getElementById('heap').textContent = data.heap;
-      document.getElementById('controlCore').textContent = data.controlCore;
-      document.getElementById('serviceCore').textContent = data.serviceCore;
-      document.getElementById('controlLoops').textContent = data.controlLoops;
-      document.getElementById('serviceLoops').textContent = data.serviceLoops;
-      document.getElementById('driveEnabled').textContent = data.driveEnabled;
-      document.getElementById('driveFault').textContent = data.driveFault;
-      document.getElementById('controlPeriod').textContent = data.controlPeriod;
-      document.getElementById('servicePeriod').textContent = data.servicePeriod;
-      document.getElementById('chip').textContent = data.chip;
-      document.getElementById('sdk').textContent = data.sdk;
+    const pitchSign = -1;
+    const rollSign = 1;
+    const yawSign = 1;
+    let attitudeInFlight = false;
+
+    async function setMode(mode) {
+      await fetch('/api/motor?mode=' + encodeURIComponent(mode) + '&stop=1', { method: 'POST' });
     }
 
-    async function restartDevice() {
-      await fetch('/api/restart', { method: 'POST' });
+    async function setSpeed(v) {
+      await fetch('/api/motor?enable=1&v=' + encodeURIComponent(v), { method: 'POST' });
     }
 
-    refreshStatus();
-    setInterval(refreshStatus, __REFRESH_MS__);
+    async function emergencyStop() {
+      await fetch('/api/motor?stop=1', { method: 'POST' });
+    }
+
+    async function setVoltage() {
+      const l = document.getElementById('voltage').value;
+      await fetch('/api/motor?l=' + encodeURIComponent(l), { method: 'POST' });
+    }
+
+    async function updateStatus() {
+      try {
+        const res = await fetch('/api/status', { cache: 'no-store' });
+        const data = await res.json();
+        document.getElementById('uptime').innerText = '通信状态: 正常 | 运行: ' + data.uptime;
+        if (data.leftMotor) {
+          const m = data.leftMotor;
+          document.getElementById('motorStatus').innerText =
+            '模式: ' + (m.openLoop ? '开环' : '闭环') +
+            ' | FOC: ' + (m.focReady ? '就绪' : '未就绪') +
+            ' | 使能: ' + (m.enabled ? '是' : '否') +
+            ' | 目标: ' + Number(m.targetVelocity).toFixed(2) + ' rad/s' +
+            ' | 实际: ' + Number(m.measuredVelocity).toFixed(2) + ' rad/s' +
+            ' | 角度: ' + Number(m.angle).toFixed(2) + ' rad' +
+            ' | 电压限制: ' + Number(m.voltageLimit).toFixed(2) + ' V' +
+            ' | 命令延迟: ' + m.commandAgeMs + ' ms';
+        }
+      } catch (e) {
+        document.getElementById('uptime').innerText = '通信状态: 断开';
+      }
+    }
+
+    async function updateAttitude() {
+      if (attitudeInFlight) return;
+      attitudeInFlight = true;
+      try {
+        const res = await fetch('/api/attitude', { cache: 'no-store' });
+        const data = await res.json();
+        const status = document.getElementById('attitudeStatus');
+
+        if (!data.valid) {
+          status.className = 'status stale';
+          status.innerText = '等待 IMU 数据...';
+          return;
+        }
+
+        const pitch = Number(data.pitch);
+        const roll = Number(data.roll);
+        const yaw = Number(data.yaw);
+        const cube = document.getElementById('cube');
+        cube.style.transform = `rotateX(${pitchSign * pitch}deg) rotateY(${rollSign * roll}deg) rotateZ(${yawSign * yaw}deg)`;
+
+        document.getElementById('pitch').innerText = pitch.toFixed(2) + '°';
+        document.getElementById('roll').innerText = roll.toFixed(2) + '°';
+        document.getElementById('yaw').innerText = yaw.toFixed(2) + '°';
+
+        const isFresh = data.ageMs <= 500;
+        status.className = isFresh ? 'status fresh' : 'status stale';
+        status.innerText = (isFresh ? '数据正常' : '数据过期') + ' | 延迟: ' + data.ageMs + ' ms | 序号: ' + data.sequence;
+      } catch (e) {
+        const status = document.getElementById('attitudeStatus');
+        status.className = 'status stale';
+        status.innerText = '姿态通信断开';
+      } finally {
+        attitudeInFlight = false;
+      }
+    }
+
+    updateStatus();
+    updateAttitude();
+    setInterval(updateStatus, 1000);
+    setInterval(updateAttitude, 100);
   </script>
 </body>
 </html>
-)HTML";
-
-  html.replace("__REFRESH_MS__", String(wifi_debug_config::kStatusRefreshMs));
+)RAW";
   return html;
 }
 
 String WiFiDebugServer::buildStatusJson() const {
-  const runtime_state::SystemSnapshot system_snapshot = runtime_state::snapshot();
+  const auto state = runtime_state::snapshot();
+  const auto& left_motor = state.control.left_motor;
 
-  // AP 模式下没有 RSSI，因此显示为 N/A。
-  String ssid = stationConnected_ ? WiFi.SSID() : wifi_debug_config::kFallbackApSsid;
-  String rssi = stationConnected_ ? String(WiFi.RSSI()) + " dBm" : "N/A";
-
-  // 将运行时间转换为更适合网页展示的格式。
-  const uint32_t seconds = millis() / 1000;
-  const uint32_t hours = seconds / 3600;
-  const uint32_t minutes = (seconds % 3600) / 60;
-  const uint32_t remain_seconds = seconds % 60;
-
-  String uptime = String(hours) + "h " + String(minutes) + "m " +
-                  String(remain_seconds) + "s";
-
-  String json = "{";
-  json += "\"mode\":\"" + currentModeLabel() + "\",";
-  json += "\"ssid\":\"" + ssid + "\",";
-  json += "\"ip\":\"" + currentIpString() + "\",";
-  json += "\"rssi\":\"" + rssi + "\",";
-  json += "\"uptime\":\"" + uptime + "\",";
-  json += "\"heap\":\"" + String(ESP.getFreeHeap()) + " bytes\",";
-  json += "\"controlCore\":\"" + String(system_snapshot.control.core_id) + "\",";
-  json += "\"serviceCore\":\"" + String(system_snapshot.service.core_id) + "\",";
-  json += "\"controlLoops\":\"" + String(system_snapshot.control.loop_counter) + "\",";
-  json += "\"serviceLoops\":\"" + String(system_snapshot.service.loop_counter) + "\",";
-  json += "\"driveEnabled\":\"" +
-          boolToLabel(system_snapshot.control.drive_enabled, "enabled", "disabled") + "\",";
-  json += "\"driveFault\":\"" + String(system_snapshot.control.drive_fault_level) + "\",";
-  json += "\"controlPeriod\":\"" + String(system_snapshot.control.task_period_ms) + " ms\",";
-  json += "\"servicePeriod\":\"" + String(system_snapshot.service.task_period_ms) + " ms\",";
-  json += "\"chip\":\"" + String(ESP.getChipModel()) + "\",";
-  json += "\"sdk\":\"" + String(ESP.getSdkVersion()) + "\"";
-  json += "}";
-  return json;
+  char buffer[512];
+  snprintf(buffer, sizeof(buffer),
+           "{\"uptime\":\"%lu s\",\"driveEnabled\":%s,\"driveFault\":%d,"
+           "\"leftMotor\":{\"initialized\":%s,\"focReady\":%s,\"enabled\":%s,\"openLoop\":%s,"
+           "\"emergencyStopped\":%s,\"targetVelocity\":%.3f,\"measuredVelocity\":%.3f,"
+           "\"angle\":%.3f,\"voltageLimit\":%.3f,\"commandAgeMs\":%lu}}",
+           (unsigned long)(millis() / 1000),
+           state.control.drive_enabled ? "true" : "false",
+           state.control.drive_fault_level,
+           left_motor.initialized ? "true" : "false",
+           left_motor.foc_ready ? "true" : "false",
+           left_motor.enabled ? "true" : "false",
+           left_motor.open_loop ? "true" : "false",
+           left_motor.emergency_stopped ? "true" : "false",
+           left_motor.target_velocity,
+           left_motor.measured_velocity,
+           left_motor.shaft_angle,
+           left_motor.voltage_limit,
+           (unsigned long)left_motor.command_age_ms);
+  return String(buffer);
 }
 
-String WiFiDebugServer::currentModeLabel() const {
-  return stationConnected_ ? "STA connected" : "AP fallback";
+String WiFiDebugServer::buildAttitudeJson() const {
+  const auto state = runtime_state::snapshot();
+  const auto& imu = state.imu;
+  const uint32_t now_ms = millis();
+  const uint32_t age_ms = imu.valid ? now_ms - imu.last_update_ms : 0;
+
+  char buffer[192];
+  snprintf(buffer, sizeof(buffer),
+           "{\"valid\":%s,\"pitch\":%.2f,\"roll\":%.2f,\"yaw\":%.2f,\"accZ\":%.2f,\"ageMs\":%lu,\"sequence\":%lu}",
+           imu.valid ? "true" : "false",
+           imu.pitch_deg,
+           imu.roll_deg,
+           imu.yaw_deg,
+           imu.acc_z,
+           (unsigned long)age_ms,
+           (unsigned long)imu.sequence);
+  return String(buffer);
 }
 
 String WiFiDebugServer::currentIpString() const {

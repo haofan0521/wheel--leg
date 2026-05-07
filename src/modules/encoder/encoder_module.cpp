@@ -1,31 +1,66 @@
 #include "modules/encoder/encoder_module.h"
 
 #include <Arduino.h>
+#include <SPI.h>
+#include <SimpleFOC.h>
 
 namespace {
 
+SPIClass* g_spi_bus = nullptr;
+
 void configureSpiBusPins(const encoder::pins::SpiBusPins& spi_pins) {
-  // 当前阶段先完成基础 GPIO 初始化。
-  // 后续正式接入 SPI 驱动时，可在此基础上切换为 SPI 外设复用。
-  pinMode(spi_pins.sck, OUTPUT);
-  pinMode(spi_pins.mosi, OUTPUT);
-  pinMode(spi_pins.miso, INPUT);
-
-  digitalWrite(spi_pins.sck, LOW);
-  digitalWrite(spi_pins.mosi, LOW);
+  if (g_spi_bus == nullptr) {
+    g_spi_bus = new SPIClass(FSPI);
+    g_spi_bus->begin(spi_pins.sck, spi_pins.miso, spi_pins.mosi, -1);
+  }
 }
 
-void configureChipSelectPin(const encoder::pins::SensorPins& sensor_pins) {
-  // MT6835 使用低电平片选，因此初始化后默认拉高。
-  pinMode(sensor_pins.chip_select, OUTPUT);
-  digitalWrite(sensor_pins.chip_select, HIGH);
-}
+class MT6835Sensor : public Sensor {
+ public:
+  explicit MT6835Sensor(uint8_t cs_pin) : cs_pin_(cs_pin) {}
 
-uint8_t chipSelectPinFromSide(const encoder::Side side) {
-  return side == encoder::Side::kLeft
-             ? encoder::pins::kLeftSensor.chip_select
-             : encoder::pins::kRightSensor.chip_select;
-}
+  void init() override {
+    pinMode(cs_pin_, OUTPUT);
+    digitalWrite(cs_pin_, HIGH);
+    Sensor::init();
+  }
+
+  float getSensorAngle() override {
+    const uint32_t data_24bit = readRawFrame();
+    const uint32_t angle_raw_21bit = data_24bit >> 3;
+    return static_cast<float>(angle_raw_21bit) * _2PI / 2097152.0f;
+  }
+
+  uint32_t readRawFrame() {
+    if (!g_spi_bus) return 0;
+
+    uint8_t rx_buf[6] = {0};
+    g_spi_bus->beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE3));
+    digitalWrite(cs_pin_, LOW);
+    delayMicroseconds(1);
+
+    rx_buf[0] = g_spi_bus->transfer(0xA0);
+    rx_buf[1] = g_spi_bus->transfer(0x00);
+    rx_buf[2] = g_spi_bus->transfer(0x00);
+    rx_buf[3] = g_spi_bus->transfer(0x00);
+    rx_buf[4] = g_spi_bus->transfer(0x00);
+    rx_buf[5] = g_spi_bus->transfer(0x00);
+
+    delayMicroseconds(1);
+    digitalWrite(cs_pin_, HIGH);
+    g_spi_bus->endTransaction();
+
+    return (static_cast<uint32_t>(rx_buf[2]) << 16) |
+           (static_cast<uint32_t>(rx_buf[3]) << 8) |
+           static_cast<uint32_t>(rx_buf[4]);
+  }
+
+ private:
+  uint8_t cs_pin_;
+};
+
+MT6835Sensor g_left_sensor(encoder::pins::kLeftSensor.chip_select);
+MT6835Sensor g_right_sensor(encoder::pins::kRightSensor.chip_select);
 
 }  // namespace
 
@@ -33,35 +68,78 @@ namespace encoder {
 
 void begin() {
   configureSpiBusPins(pins::kSpiBus);
-  configureChipSelectPin(pins::kLeftSensor);
-  configureChipSelectPin(pins::kRightSensor);
+  g_left_sensor.init();
+  g_right_sensor.init();
 }
 
-void select(const Side side) {
-  // 选中目标编码器前，先释放所有片选，确保同一时刻只有一个器件挂到总线上。
-  deselectAll();
-  digitalWrite(chipSelectPinFromSide(side), LOW);
+Sensor* leftSensor() {
+  return &g_left_sensor;
 }
 
-void deselect(const Side side) {
-  digitalWrite(chipSelectPinFromSide(side), HIGH);
+Sensor* rightSensor() {
+  return &g_right_sensor;
 }
 
-void deselectAll() {
-  digitalWrite(pins::kLeftSensor.chip_select, HIGH);
-  digitalWrite(pins::kRightSensor.chip_select, HIGH);
+float leftAngle() {
+  g_left_sensor.update();
+  return g_left_sensor.getAngle();
 }
 
-const pins::SpiBusPins& spiBusPins() {
-  return pins::kSpiBus;
+float leftVelocity() {
+  g_left_sensor.update();
+  return g_left_sensor.getVelocity();
 }
 
-const pins::SensorPins& leftSensorPins() {
-  return pins::kLeftSensor;
+float rightAngle() {
+  g_right_sensor.update();
+  return g_right_sensor.getAngle();
 }
 
-const pins::SensorPins& rightSensorPins() {
-  return pins::kRightSensor;
+float rightVelocity() {
+  g_right_sensor.update();
+  return g_right_sensor.getVelocity();
+}
+
+void testPrintEncoders() {
+  g_left_sensor.update();
+  g_right_sensor.update();
+
+  const float left_angle_deg = g_left_sensor.getAngle() * 180.0f / _PI;
+  const float left_vel_rad_s = g_left_sensor.getVelocity();
+  const float right_angle_deg = g_right_sensor.getAngle() * 180.0f / _PI;
+  const float right_vel_rad_s = g_right_sensor.getVelocity();
+
+  Serial.printf("[Encoder] L Pos: %.2f deg | L Vel: %.2f rad/s | R Pos: %.2f deg | R Vel: %.2f rad/s\n",
+                left_angle_deg,
+                left_vel_rad_s,
+                right_angle_deg,
+                right_vel_rad_s);
+}
+
+void testReadLeftEncoder() {
+  g_left_sensor.update();
+  const uint32_t raw_frame = g_left_sensor.readRawFrame();
+  const uint32_t raw_angle = raw_frame >> 3;
+  const float angle_deg = static_cast<float>(raw_angle) * 360.0f / 2097152.0f;
+
+  Serial.printf("[Encoder] L raw24: 0x%06lX | raw21: %lu | angle: %.2f deg | vel: %.2f rad/s\n",
+                static_cast<unsigned long>(raw_frame),
+                static_cast<unsigned long>(raw_angle),
+                angle_deg,
+                g_left_sensor.getVelocity());
+}
+
+void testReadRightEncoder() {
+  g_right_sensor.update();
+  const uint32_t raw_frame = g_right_sensor.readRawFrame();
+  const uint32_t raw_angle = raw_frame >> 3;
+  const float angle_deg = static_cast<float>(raw_angle) * 360.0f / 2097152.0f;
+
+  Serial.printf("[Encoder] R raw24: 0x%06lX | raw21: %lu | angle: %.2f deg | vel: %.2f rad/s\n",
+                static_cast<unsigned long>(raw_frame),
+                static_cast<unsigned long>(raw_angle),
+                angle_deg,
+                g_right_sensor.getVelocity());
 }
 
 }  // namespace encoder

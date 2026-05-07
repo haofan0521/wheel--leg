@@ -9,6 +9,9 @@
 | `Task 3` | 新建编码器模块文件，定义编码器相关引脚 | `已完成` | `include/modules/encoder/encoder_pins.h` `include/modules/encoder/encoder_module.h` `src/modules/encoder/encoder_module.cpp` |
 | `Task 4` | 新建 IMU 模块文件，定义 IMU 相关引脚 | `已完成` | `include/modules/imu/imu_pins.h` `include/modules/imu/imu_module.h` `src/modules/imu/imu_module.cpp` |
 | `Task 5` | 新建舵机模块文件，定义舵机相关引脚 | `已完成` | `include/modules/servo/servo_pins.h` `include/modules/servo/servo_module.h` `src/modules/servo/servo_module.cpp` |
+| `Task 6` | 实现电驱功能，接入控制任务并完善底层控制接口 | `待完成` | `include/modules/drive/drive_module.h` `src/modules/drive/drive_module.cpp` `src/system/app_runtime.cpp` |
+| `Task 7` | 实现 `BMI088` 功能，完成初始化、寄存器配置与数据读取 | `待完成` | `include/modules/imu/imu_module.h` `src/modules/imu/imu_module.cpp` `src/system/app_runtime.cpp` |
+| `Task 8` | 实现编码器功能，完成 `MT6835` SPI 通信与角度读取 | `待完成` | `include/modules/encoder/encoder_module.h` `src/modules/encoder/encoder_module.cpp` `src/system/app_runtime.cpp` |
 
 ## 当前目录规划
 
@@ -58,4 +61,6 @@ src/
 
 ## 后续执行顺序
 
-1. 当前基础模块任务已全部完成，可继续进入具体驱动与通信协议实现阶段。
+1. 实现电驱功能，完善电驱使能、PWM 输出与控制任务接入。
+2. 实现 `BMI088` 功能，完成初始化、寄存器配置与数据读取。
+3. 实现编码器功能，完成 `MT6835` SPI 通信与角度读取。

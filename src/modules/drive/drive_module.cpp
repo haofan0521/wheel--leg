@@ -19,11 +19,11 @@ void configurePwmPins(const drive::pins::ThreePhasePwmPins& pwm_pins) {
 }
 
 void configureFeedbackPins(const drive::pins::FeedbackPins& feedback_pins) {
-  // 反馈采样引脚当前先作为普通输入初始化，
-  // 后续接入 ADC 或采样驱动时可在此基础上扩展。
-  pinMode(feedback_pins.channel_a, INPUT);
-  pinMode(feedback_pins.channel_b, INPUT);
-  pinMode(feedback_pins.channel_c, INPUT);
+  // 反馈采样引脚当前先作为普通输入初始化。
+  // 注意：如果引脚号为 0，视为未连接或已冲突禁用。
+  if (feedback_pins.channel_a != 0) pinMode(feedback_pins.channel_a, INPUT);
+  if (feedback_pins.channel_b != 0) pinMode(feedback_pins.channel_b, INPUT);
+  if (feedback_pins.channel_c != 0) pinMode(feedback_pins.channel_c, INPUT);
 }
 
 }  // namespace
@@ -41,8 +41,9 @@ void begin() {
   configurePwmPins(pins::kLeftMotorPwm);
   configurePwmPins(pins::kRightMotorPwm);
 
-  configureFeedbackPins(pins::kLeftMotorFeedback);
-  configureFeedbackPins(pins::kRightMotorFeedback);
+  // 临时关闭 ADC 引脚的 INPUT 模式，防止干扰复用为 PWM 的飞线引脚
+  // configureFeedbackPins(pins::kLeftMotorFeedback);
+  // configureFeedbackPins(pins::kRightMotorFeedback);
 
   g_drive_enabled = false;
 }

@@ -20,8 +20,8 @@ inline constexpr uint32_t kControlTaskStackBytes = 6144;
 inline constexpr uint32_t kServiceTaskStackBytes = 8192;
 
 // 当前阶段的基础调度周期。
-// 后续接入 FOC 时，控制任务可进一步改为定时器驱动或更短周期。
-inline constexpr uint32_t kControlTaskPeriodMs = 2;
+// 闭环 FOC 建议保持在 1ms 或更低，当前设定为 1ms 以提升速度环响应。
+inline constexpr uint32_t kControlTaskPeriodMs = 1;
 inline constexpr uint32_t kServiceTaskPeriodMs = 2;
 
 }  // namespace app_runtime_config

@@ -30,6 +30,7 @@ inline constexpr ThreePhasePwmPins kLeftMotorPwm = {
 };
 
 // 右轮电机三相 PWM 输出。
+// 注意：原设计的 48, 47 已恢复（用户确认使用 47 48）。
 inline constexpr ThreePhasePwmPins kRightMotorPwm = {
     .phase_a = 48,
     .phase_b = 47,
