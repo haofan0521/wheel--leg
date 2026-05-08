@@ -11,7 +11,7 @@ struct ThreePhasePwmPins {
   uint8_t phase_c;
 };
 
-// 电驱反馈采样引脚定义。
+// 电驱电流采样引脚定义，当前只使用 SOB/SOC 对应的 B/C 两相电流。
 struct FeedbackPins {
   uint8_t channel_a;
   uint8_t channel_b;
@@ -37,16 +37,14 @@ inline constexpr ThreePhasePwmPins kRightMotorPwm = {
     .phase_c = 42,
 };
 
-// 原理图中沿用 SQA/SQB/SQC 命名。
-// 在固件中，这 3 路信号作为左侧电驱反馈采样输入管理。
+// SQA 未接入 FOC 电流采样；SOB/SOC 分别对应 B/C 相电流。
 inline constexpr FeedbackPins kLeftMotorFeedback = {
     .channel_a = 1,
     .channel_b = 2,
     .channel_c = 3,
 };
 
-// 原理图中沿用 SQA/SQB/SQC 命名。
-// 在固件中，这 3 路信号作为右侧电驱反馈采样输入管理。
+// SQA 未接入 FOC 电流采样；SOB/SOC 分别对应 B/C 相电流。
 inline constexpr FeedbackPins kRightMotorFeedback = {
     .channel_a = 4,
     .channel_b = 5,

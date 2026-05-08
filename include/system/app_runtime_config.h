@@ -24,4 +24,7 @@ inline constexpr uint32_t kServiceTaskStackBytes = 8192;
 inline constexpr uint32_t kControlTaskPeriodMs = 1;
 inline constexpr uint32_t kServiceTaskPeriodMs = 2;
 
+inline constexpr bool kEnableVofaTelemetry = false;
+inline constexpr uint32_t kVofaTelemetryDecimation = 10;
+
 }  // namespace app_runtime_config

@@ -1,12 +1,14 @@
 #include "system/app_runtime.h"
 
 #include <Arduino.h>
+#include <stddef.h>
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
 #include "modules/drive/drive_module.h"
 #include "modules/drive/left_motor_test.h"
+#include "modules/drive/right_motor_test.h"
 #include "modules/encoder/encoder_module.h"
 #include "modules/imu/imu_module.h"
 #include "modules/servo/servo_module.h"
@@ -19,55 +21,206 @@ namespace {
 TaskHandle_t g_control_task_handle = nullptr;
 TaskHandle_t g_service_task_handle = nullptr;
 bool g_runtime_started = false;
-constexpr uint32_t kMotorCommandTimeoutMs = 30000;
+constexpr uint32_t kMotorCommandTimeoutMs = 10000;
 uint32_t g_last_left_motor_command_sequence = 0;
+uint32_t g_last_right_motor_command_sequence = 0;
 
-void applyLeftMotorCommand() {
-  const auto command = runtime_state::leftMotorCommand();
+void sendVofaFrame(const float* values, const size_t value_count) {
+  for (size_t i = 0; i < value_count; ++i) {
+    Serial.write(reinterpret_cast<const uint8_t*>(&values[i]), sizeof(values[i]));
+  }
+
+  const uint8_t tail[] = {0x00, 0x00, 0x80, 0x7F};
+  Serial.write(tail, sizeof(tail));
+}
+
+void sendLeftMotorVofaTelemetry(const drive::left_motor_test::Status& status) {
+  const float values[] = {
+      status.target_velocity,
+      status.measured_velocity,
+      status.velocity_error,
+      status.velocity_p_output,
+      status.velocity_i_output,
+  };
+  sendVofaFrame(values, sizeof(values) / sizeof(values[0]));
+}
+
+using SetOpenLoopFn = void (*)(bool);
+using SetEnabledFn = void (*)(bool);
+using SetTargetVelocityFn = void (*)(float);
+using EmergencyStopFn = void (*)();
+using SetVoltageLimitFn = void (*)(float);
+using SetVelocityPidFn = void (*)(float, float, float, float);
+
+using SetCurrentLimitFn = void (*)(float);
+using SetTorqueModeFn = void (*)(drive::DriveMotorController::TorqueMode);
+
+void applyMotorCommand(const runtime_state::MotorCommand& command,
+                       uint32_t& last_sequence,
+                       SetOpenLoopFn set_open_loop,
+                       SetEnabledFn set_enabled,
+                       SetTargetVelocityFn set_target_velocity,
+                       EmergencyStopFn emergency_stop,
+                       SetVoltageLimitFn set_voltage_limit,
+                       SetVelocityPidFn set_velocity_pid,
+                       SetCurrentLimitFn set_current_limit,
+                       SetTorqueModeFn set_torque_mode) {
   const uint32_t now_ms = millis();
 
-  if (command.sequence != 0 && command.sequence != g_last_left_motor_command_sequence) {
-    g_last_left_motor_command_sequence = command.sequence;
+  if (command.sequence != 0 && command.sequence != last_sequence) {
+    last_sequence = command.sequence;
 
     if (command.has_open_loop) {
-      drive::left_motor_test::setOpenLoop(command.open_loop);
+      set_open_loop(command.open_loop);
     }
 
     if (command.has_voltage_limit) {
-      drive::left_motor_test::setVoltageLimit(command.voltage_limit);
+      set_voltage_limit(command.voltage_limit);
+    }
+
+    if (command.has_current_limit) {
+      set_current_limit(command.current_limit);
+    }
+
+    if (command.has_torque_mode) {
+      set_torque_mode(static_cast<drive::DriveMotorController::TorqueMode>(command.torque_mode));
+    }
+
+    if (command.has_tuning) {
+      set_velocity_pid(command.velocity_p,
+                       command.velocity_i,
+                       command.velocity_d,
+                       command.velocity_lpf_tf);
     }
 
     if (command.stop) {
-      drive::left_motor_test::emergencyStop();
+      emergency_stop();
       return;
     }
 
     if (command.has_enable) {
-      drive::left_motor_test::setEnabled(command.enable);
+      set_enabled(command.enable);
     }
     if (command.enable && command.has_velocity_target) {
-      drive::left_motor_test::setTargetVelocity(command.target_velocity);
+      set_target_velocity(command.target_velocity);
     }
   }
 
   if (command.sequence != 0 && command.enable && now_ms - command.updated_ms > kMotorCommandTimeoutMs) {
-    drive::left_motor_test::emergencyStop();
+    emergency_stop();
   }
 }
 
+void applyLeftMotorCommand() {
+  applyMotorCommand(runtime_state::leftMotorCommand(),
+                    g_last_left_motor_command_sequence,
+                    drive::left_motor_test::setOpenLoop,
+                    drive::left_motor_test::setEnabled,
+                    drive::left_motor_test::setTargetVelocity,
+                    drive::left_motor_test::emergencyStop,
+                    drive::left_motor_test::setVoltageLimit,
+                    drive::left_motor_test::setVelocityPid,
+                    drive::left_motor_test::setCurrentLimit,
+                    drive::left_motor_test::setTorqueMode);
+}
+
+void applyRightMotorCommand() {
+  applyMotorCommand(runtime_state::rightMotorCommand(),
+                    g_last_right_motor_command_sequence,
+                    drive::right_motor_test::setOpenLoop,
+                    drive::right_motor_test::setEnabled,
+                    drive::right_motor_test::setTargetVelocity,
+                    drive::right_motor_test::emergencyStop,
+                    drive::right_motor_test::setVoltageLimit,
+                    drive::right_motor_test::setVelocityPid,
+                    drive::right_motor_test::setCurrentLimit,
+                    drive::right_motor_test::setTorqueMode);
+}
+
+void fillMotorSnapshot(runtime_state::MotorSnapshot& snapshot,
+                       const drive::DriveMotorController::Status& status,
+                       const runtime_state::MotorCommand& command) {
+  snapshot.initialized = status.initialized;
+  snapshot.foc_ready = status.foc_ready;
+  snapshot.enabled = status.enabled;
+  snapshot.emergency_stopped = status.emergency_stopped;
+  snapshot.open_loop = status.open_loop;
+  snapshot.torque_mode = static_cast<uint8_t>(status.torque_mode);
+  snapshot.current_sense_ready = status.current_sense_ready;
+  snapshot.simplefoc_current_sense_ready = status.simplefoc_current_sense_ready;
+  snapshot.over_current = status.over_current;
+  snapshot.target_velocity = status.target_velocity;
+  snapshot.measured_velocity = status.measured_velocity;
+  snapshot.shaft_angle = status.shaft_angle;
+  snapshot.voltage_limit = status.voltage_limit;
+  snapshot.velocity_p = status.velocity_p;
+  snapshot.velocity_i = status.velocity_i;
+  snapshot.velocity_d = status.velocity_d;
+  snapshot.velocity_lpf_tf = status.velocity_lpf_tf;
+  snapshot.velocity_error = status.velocity_error;
+  snapshot.velocity_p_output = status.velocity_p_output;
+  snapshot.velocity_i_output = status.velocity_i_output;
+  snapshot.velocity_pid_output = status.velocity_pid_output;
+  snapshot.current_limit = status.current_limit;
+  snapshot.current_q = status.current_q;
+  snapshot.current_d = status.current_d;
+  snapshot.current_sp = status.current_sp;
+  snapshot.voltage_q = status.voltage_q;
+  snapshot.voltage_d = status.voltage_d;
+  snapshot.phase_current_a = status.phase_current_a;
+  snapshot.phase_current_b = status.phase_current_b;
+  snapshot.phase_current_c = status.phase_current_c;
+  snapshot.phase_voltage_b = status.phase_voltage_b;
+  snapshot.phase_voltage_c = status.phase_voltage_c;
+  snapshot.phase_offset_voltage_b = status.phase_offset_voltage_b;
+  snapshot.phase_offset_voltage_c = status.phase_offset_voltage_c;
+  snapshot.phase_voltage_delta_b = status.phase_voltage_delta_b;
+  snapshot.phase_voltage_delta_c = status.phase_voltage_delta_c;
+  snapshot.command_age_ms = command.sequence == 0 ? 0 : millis() - command.updated_ms;
+}
+
+const char* torqueModeName(const uint8_t mode) {
+  if (mode == 1) return "dc_current";
+  if (mode == 2) return "foc_current";
+  return "voltage";
+}
+
+void printMotorDebugLine(const char* name, const runtime_state::MotorSnapshot& motor) {
+  Serial.printf("[%s] mode=%s foc=%d en=%d oc=%d target=%.2f vel=%.2f Iabc=%.3f/%.3f/%.3f Idq=%.3f/%.3f sp=%.3f Uq=%.3f Ud=%.3f Vbc=%.3f/%.3f dVbc=%.3f/%.3f\n",
+                name,
+                torqueModeName(motor.torque_mode),
+                motor.foc_ready,
+                motor.enabled,
+                motor.over_current,
+                motor.target_velocity,
+                motor.measured_velocity,
+                motor.phase_current_a,
+                motor.phase_current_b,
+                motor.phase_current_c,
+                motor.current_d,
+                motor.current_q,
+                motor.current_sp,
+                motor.voltage_q,
+                motor.voltage_d,
+                motor.phase_voltage_b,
+                motor.phase_voltage_c,
+                motor.phase_voltage_delta_b,
+                motor.phase_voltage_delta_c);
+}
+
+void printMotorDebugTelemetry(const runtime_state::ControlSnapshot& snapshot) {
+  printMotorDebugLine("L", snapshot.left_motor);
+  printMotorDebugLine("R", snapshot.right_motor);
+}
+
 void controlTaskEntry(void* /*context*/) {
-  // 初始化电驱 GPIO
   drive::begin();
-  
-  // 先初始化编码器，因为它需要配置 SPI 总线，而电机初始化可能需要传感器
   encoder::begin();
 
-  // 必须先开启电驱总使能（EN），电机驱动板才能开始响应 PWM
-  // 对于某些驱动芯片，initFOC() 需要驱动器处于 Ready 状态
   drive::setEnabled(true);
 
-  // 再初始化当前活动电机控制器。
   drive::left_motor_test::init();
+  drive::right_motor_test::init();
 
   imu::begin();
   servo::begin();
@@ -80,9 +233,27 @@ void controlTaskEntry(void* /*context*/) {
     ++control_loop_counter;
 
     applyLeftMotorCommand();
+    applyRightMotorCommand();
     drive::left_motor_test::update();
+    drive::right_motor_test::update();
+    imu::update();
+
+    const auto attitude = imu::getAttitude();
+    const auto imu_data = imu::getData();
+    runtime_state::ImuSnapshot imu_snapshot = {};
+    imu_snapshot.pitch_deg = attitude.pitch;
+    imu_snapshot.roll_deg = attitude.roll;
+    imu_snapshot.yaw_deg = attitude.yaw;
+    imu_snapshot.acc_z = imu_data.acc_z;
+    imu_snapshot.last_update_ms = millis();
+    imu_snapshot.sequence = ++imu_sequence;
+    imu_snapshot.valid = true;
+    runtime_state::updateImuSnapshot(imu_snapshot);
 
     const auto left_motor_status = drive::left_motor_test::status();
+    const auto right_motor_status = drive::right_motor_test::status();
+    const auto left_command = runtime_state::leftMotorCommand();
+    const auto right_command = runtime_state::rightMotorCommand();
 
     runtime_state::ControlSnapshot snapshot = {};
     snapshot.loop_counter = control_loop_counter;
@@ -91,43 +262,38 @@ void controlTaskEntry(void* /*context*/) {
     snapshot.drive_fault_level = drive::readFaultLevel();
     snapshot.drive_enabled = drive::isEnabled();
     snapshot.core_id = static_cast<uint8_t>(xPortGetCoreID());
-    snapshot.left_motor.initialized = left_motor_status.initialized;
-    snapshot.left_motor.foc_ready = left_motor_status.foc_ready;
-    snapshot.left_motor.enabled = left_motor_status.enabled;
-    snapshot.left_motor.emergency_stopped = left_motor_status.emergency_stopped;
-    snapshot.left_motor.open_loop = left_motor_status.open_loop;
-    snapshot.left_motor.target_velocity = left_motor_status.target_velocity;
-    snapshot.left_motor.measured_velocity = left_motor_status.measured_velocity;
-    snapshot.left_motor.shaft_angle = left_motor_status.shaft_angle;
-    snapshot.left_motor.voltage_limit = left_motor_status.voltage_limit;
-    const auto current_command = runtime_state::leftMotorCommand();
-    snapshot.left_motor.command_age_ms = current_command.sequence == 0 ? 0 : millis() - current_command.updated_ms;
+    fillMotorSnapshot(snapshot.left_motor, left_motor_status, left_command);
+    fillMotorSnapshot(snapshot.right_motor, right_motor_status, right_command);
     runtime_state::updateControlSnapshot(snapshot);
 
     if (control_loop_counter % 100 == 0) {
-      Serial.printf("[MotorSpeed] target=%.3f rad/s measured=%.3f rad/s\n",
-                    left_motor_status.target_velocity,
-                    left_motor_status.measured_velocity);
+      printMotorDebugTelemetry(snapshot);
     }
 
-    // 当前先保留任务骨架与状态发布。
-    // 后续可在这里接入编码器采样、IMU 读取和 FOC 控制循环。
+    if (app_runtime_config::kEnableVofaTelemetry) {
+      if (control_loop_counter % app_runtime_config::kVofaTelemetryDecimation == 0) {
+        sendLeftMotorVofaTelemetry(left_motor_status);
+      }
+    } else if (control_loop_counter % 100 == 0) {
+      Serial.printf("[MotorSpeed] L target=%.3f measured=%.3f | R target=%.3f measured=%.3f\n",
+                    left_motor_status.target_velocity,
+                    left_motor_status.measured_velocity,
+                    right_motor_status.target_velocity,
+                    right_motor_status.measured_velocity);
+    }
+
     vTaskDelayUntil(&last_wake_tick,
                     pdMS_TO_TICKS(app_runtime_config::kControlTaskPeriodMs));
   }
 }
 
 void serviceTaskEntry(void* /*context*/) {
-  // Wi-Fi 与网页调试只在服务任务中运行，避免干扰控制任务。
   WiFiDebugServer::instance().begin();
 
   uint32_t service_loop_counter = 0;
   for (;;) {
     ++service_loop_counter;
     WiFiDebugServer::instance().loop();
-
-    // 解析串口输入的命令控制左侧电机
-    // drive::left_motor_test::processSerial();
 
     runtime_state::ServiceSnapshot snapshot = {};
     snapshot.loop_counter = service_loop_counter;
@@ -152,7 +318,6 @@ void begin() {
 
   runtime_state::begin();
 
-  // 先创建控制任务，再创建服务任务，保证控制链路优先就绪。
   const BaseType_t control_result = xTaskCreatePinnedToCore(
       controlTaskEntry,
       "control_task",

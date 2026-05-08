@@ -6,6 +6,7 @@ namespace {
 
 runtime_state::SystemSnapshot g_system_snapshot = {};
 runtime_state::MotorCommand g_left_motor_command = {};
+runtime_state::MotorCommand g_right_motor_command = {};
 portMUX_TYPE g_runtime_state_mux = portMUX_INITIALIZER_UNLOCKED;
 
 }  // namespace
@@ -16,6 +17,7 @@ void begin() {
   portENTER_CRITICAL(&g_runtime_state_mux);
   g_system_snapshot = {};
   g_left_motor_command = {};
+  g_right_motor_command = {};
   portEXIT_CRITICAL(&g_runtime_state_mux);
 }
 
@@ -43,9 +45,22 @@ void updateLeftMotorCommand(const MotorCommand& command) {
   portEXIT_CRITICAL(&g_runtime_state_mux);
 }
 
+void updateRightMotorCommand(const MotorCommand& command) {
+  portENTER_CRITICAL(&g_runtime_state_mux);
+  g_right_motor_command = command;
+  portEXIT_CRITICAL(&g_runtime_state_mux);
+}
+
 MotorCommand leftMotorCommand() {
   portENTER_CRITICAL(&g_runtime_state_mux);
   const MotorCommand command = g_left_motor_command;
+  portEXIT_CRITICAL(&g_runtime_state_mux);
+  return command;
+}
+
+MotorCommand rightMotorCommand() {
+  portENTER_CRITICAL(&g_runtime_state_mux);
+  const MotorCommand command = g_right_motor_command;
   portEXIT_CRITICAL(&g_runtime_state_mux);
   return command;
 }

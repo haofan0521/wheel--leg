@@ -1,19 +1,11 @@
 #pragma once
 
+#include "modules/drive/drive_motor_controller.h"
+
 namespace drive {
 namespace left_motor_test {
 
-struct Status {
-  bool initialized;
-  bool foc_ready;
-  bool enabled;
-  bool emergency_stopped;
-  bool open_loop;
-  float target_velocity;
-  float measured_velocity;
-  float shaft_angle;
-  float voltage_limit;
-};
+using Status = DriveMotorController::Status;
 
 void init();
 void update();
@@ -23,6 +15,9 @@ void setEnabled(bool enabled);
 void setTargetVelocity(float velocity);
 void emergencyStop();
 void setVoltageLimit(float limit);
+void setVelocityPid(float p, float i, float d, float lpf_tf);
+void setCurrentLimit(float limit);
+void setTorqueMode(DriveMotorController::TorqueMode mode);
 float getAngle();
 Status status();
 
