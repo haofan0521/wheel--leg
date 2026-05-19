@@ -9,14 +9,13 @@ drive::DriveMotorController g_controller({
     .name = "left",
     .pole_pairs = 11,
     .pwm_pins = drive::pins::kLeftMotorPwm,
-    .feedback_pins = drive::pins::kLeftMotorFeedback,
     .sensor_provider = encoder::leftSensor,
     .read_angle = encoder::leftAngle,
     .read_velocity = encoder::leftVelocity,
     .pwm_channel_a = 0,
     .pwm_channel_b = 1,
     .pwm_channel_c = 2,
-    .velocity_direction = 1.0f,
+    .velocity_direction = -1.0f,
 });
 
 }  // namespace
@@ -35,8 +34,6 @@ void setVoltageLimit(const float limit) { g_controller.setVoltageLimit(limit); }
 void setVelocityPid(const float p, const float i, const float d, const float lpf_tf) {
   g_controller.setVelocityPid(p, i, d, lpf_tf);
 }
-void setCurrentLimit(const float limit) { g_controller.setCurrentLimit(limit); }
-void setTorqueMode(const DriveMotorController::TorqueMode mode) { g_controller.setTorqueMode(mode); }
 float getAngle() { return g_controller.getAngle(); }
 Status status() { return g_controller.status(); }
 

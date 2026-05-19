@@ -18,14 +18,6 @@ void configurePwmPins(const drive::pins::ThreePhasePwmPins& pwm_pins) {
   digitalWrite(pwm_pins.phase_c, LOW);
 }
 
-void configureFeedbackPins(const drive::pins::FeedbackPins& feedback_pins) {
-  // 反馈采样引脚当前先作为普通输入初始化。
-  // 注意：如果引脚号为 0，视为未连接或已冲突禁用。
-  if (feedback_pins.channel_a != 0) pinMode(feedback_pins.channel_a, INPUT);
-  if (feedback_pins.channel_b != 0) pinMode(feedback_pins.channel_b, INPUT);
-  if (feedback_pins.channel_c != 0) pinMode(feedback_pins.channel_c, INPUT);
-}
-
 }  // namespace
 
 namespace drive {
@@ -40,10 +32,6 @@ void begin() {
 
   configurePwmPins(pins::kLeftMotorPwm);
   configurePwmPins(pins::kRightMotorPwm);
-
-  // 临时关闭 ADC 引脚的 INPUT 模式，防止干扰复用为 PWM 的飞线引脚
-  // configureFeedbackPins(pins::kLeftMotorFeedback);
-  // configureFeedbackPins(pins::kRightMotorFeedback);
 
   g_drive_enabled = false;
 }
@@ -79,14 +67,6 @@ const pins::ThreePhasePwmPins& leftMotorPwmPins() {
 
 const pins::ThreePhasePwmPins& rightMotorPwmPins() {
   return pins::kRightMotorPwm;
-}
-
-const pins::FeedbackPins& leftMotorFeedbackPins() {
-  return pins::kLeftMotorFeedback;
-}
-
-const pins::FeedbackPins& rightMotorFeedbackPins() {
-  return pins::kRightMotorFeedback;
 }
 
 }  // namespace drive

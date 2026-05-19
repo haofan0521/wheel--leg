@@ -31,8 +31,6 @@ void resetCommandFlags(runtime_state::MotorCommand& command) {
   command.has_voltage_limit = false;
   command.has_open_loop = false;
   command.has_tuning = false;
-  command.has_current_limit = false;
-  command.has_torque_mode = false;
 }
 
 void applyRequestToCommand(WebServer& server, runtime_state::MotorCommand& command) {
@@ -64,25 +62,6 @@ void applyRequestToCommand(WebServer& server, runtime_state::MotorCommand& comma
     command.has_voltage_limit = true;
   }
 
-  if (server.hasArg("cl")) {
-    command.current_limit = clampFloat(server.arg("cl").toFloat(), 0.1f, 2.5f);
-    command.has_current_limit = true;
-  }
-
-  if (server.hasArg("torque")) {
-    const String torque = server.arg("torque");
-    if (torque == "dc" || torque == "dc_current" || torque == "1") {
-      command.torque_mode = 1;
-      command.has_torque_mode = true;
-    } else if (torque == "foc" || torque == "foc_current" || torque == "2") {
-      command.torque_mode = 2;
-      command.has_torque_mode = true;
-    } else if (torque == "voltage" || torque == "0") {
-      command.torque_mode = 0;
-      command.has_torque_mode = true;
-    }
-  }
-
   if (server.hasArg("p") || server.hasArg("i") || server.hasArg("d") || server.hasArg("tf")) {
     command.velocity_p = server.hasArg("p") ? clampFloat(server.arg("p").toFloat(), 0.0f, 2.0f) : command.velocity_p;
     command.velocity_i = server.hasArg("i") ? clampFloat(server.arg("i").toFloat(), 0.0f, 20.0f) : command.velocity_i;
@@ -92,34 +71,19 @@ void applyRequestToCommand(WebServer& server, runtime_state::MotorCommand& comma
   }
 }
 
-String torqueModeName(const uint8_t mode) {
-  if (mode == 1) return "dc_current";
-  if (mode == 2) return "foc_current";
-  return "voltage";
-}
-
 String motorSnapshotJson(const runtime_state::MotorSnapshot& motor) {
-  char buffer[1024];
+  char buffer[768];
   snprintf(buffer, sizeof(buffer),
            "{\"initialized\":%s,\"focReady\":%s,\"enabled\":%s,\"openLoop\":%s,"
-           "\"torqueMode\":\"%s\",\"currentSenseReady\":%s,\"simplefocCurrentSenseReady\":%s,"
-           "\"emergencyStopped\":%s,\"overCurrent\":%s,"
+           "\"emergencyStopped\":%s,"
            "\"targetVelocity\":%.3f,\"measuredVelocity\":%.3f,\"angle\":%.3f,\"voltageLimit\":%.3f,"
            "\"velocityP\":%.4f,\"velocityI\":%.4f,\"velocityD\":%.4f,\"velocityTf\":%.4f,"
-           "\"currentLimit\":%.3f,\"currentQ\":%.4f,\"currentD\":%.4f,\"currentSp\":%.4f,\"voltageQ\":%.4f,\"voltageD\":%.4f,"
-           "\"phaseCurrentA\":%.4f,\"phaseCurrentB\":%.4f,\"phaseCurrentC\":%.4f,"
-           "\"phaseVoltageB\":%.4f,\"phaseVoltageC\":%.4f,"
-           "\"phaseOffsetVoltageB\":%.4f,\"phaseOffsetVoltageC\":%.4f,"
-           "\"phaseVoltageDeltaB\":%.4f,\"phaseVoltageDeltaC\":%.4f,\"commandAgeMs\":%lu}",
+           "\"voltageQ\":%.4f,\"voltageD\":%.4f,\"commandAgeMs\":%lu}",
            motor.initialized ? "true" : "false",
            motor.foc_ready ? "true" : "false",
            motor.enabled ? "true" : "false",
            motor.open_loop ? "true" : "false",
-           torqueModeName(motor.torque_mode).c_str(),
-           motor.current_sense_ready ? "true" : "false",
-           motor.simplefoc_current_sense_ready ? "true" : "false",
            motor.emergency_stopped ? "true" : "false",
-           motor.over_current ? "true" : "false",
            motor.target_velocity,
            motor.measured_velocity,
            motor.shaft_angle,
@@ -128,26 +92,35 @@ String motorSnapshotJson(const runtime_state::MotorSnapshot& motor) {
            motor.velocity_i,
            motor.velocity_d,
            motor.velocity_lpf_tf,
-           motor.current_limit,
-           motor.current_q,
-           motor.current_d,
-           motor.current_sp,
            motor.voltage_q,
            motor.voltage_d,
-           motor.phase_current_a,
-           motor.phase_current_b,
-           motor.phase_current_c,
-           motor.phase_voltage_b,
-           motor.phase_voltage_c,
-           motor.phase_offset_voltage_b,
-           motor.phase_offset_voltage_c,
-           motor.phase_voltage_delta_b,
-           motor.phase_voltage_delta_c,
            (unsigned long)motor.command_age_ms);
   return String(buffer);
 }
 
+String balanceSnapshotJson(const runtime_state::BalanceSnapshot& balance) {
+  char buffer[384];
+  snprintf(buffer, sizeof(buffer),
+           "{\"enabled\":%s,\"active\":%s,\"fault\":%s,"
+           "\"targetPitch\":%.3f,\"pitch\":%.3f,\"pitchRate\":%.3f,\"outputVelocity\":%.3f,"
+           "\"kp\":%.4f,\"kd\":%.4f,\"maxVelocity\":%.3f,\"maxAngle\":%.3f,\"lastUpdateMs\":%lu}",
+           balance.enabled ? "true" : "false",
+           balance.active ? "true" : "false",
+           balance.fault ? "true" : "false",
+           balance.target_pitch_deg,
+           balance.pitch_deg,
+           balance.pitch_rate_dps,
+           balance.output_velocity,
+           balance.kp,
+           balance.kd,
+           balance.max_velocity,
+           balance.max_angle_deg,
+           (unsigned long)balance.last_update_ms);
+  return String(buffer);
+}
+
 uint32_t g_motor_command_sequence = 0;
+uint32_t g_balance_command_sequence = 0;
 
 }  // namespace
 
@@ -180,6 +153,7 @@ void WiFiDebugServer::configureRoutes() {
   server_.on("/api/attitude", HTTP_GET, [this]() { handleAttitude(); });
   server_.on("/api/restart", HTTP_POST, [this]() { handleRestart(); });
   server_.on("/api/motor", HTTP_POST, [this]() { handleMotorCommand(); });
+  server_.on("/api/balance", HTTP_POST, [this]() { handleBalanceCommand(); });
   server_.onNotFound([this]() { server_.send(404, "text/plain", "Not Found"); });
 }
 
@@ -245,6 +219,45 @@ void WiFiDebugServer::handleMotorCommand() {
   server_.send(200, "application/json; charset=utf-8", "{\"ok\":true}");
 }
 
+void WiFiDebugServer::handleBalanceCommand() {
+  auto command = runtime_state::balanceCommand();
+  command.stop = false;
+  command.has_enable = false;
+  command.has_tuning = false;
+
+  if (server_.hasArg("enable")) {
+    command.enable = server_.arg("enable").toInt() != 0;
+    command.has_enable = true;
+  }
+  if (server_.hasArg("stop")) {
+    command.stop = true;
+    command.enable = false;
+    command.has_enable = true;
+  }
+  if (server_.hasArg("target") || server_.hasArg("kp") || server_.hasArg("kd") ||
+      server_.hasArg("maxv") || server_.hasArg("maxa")) {
+    const auto state = runtime_state::snapshot();
+    const auto& balance = state.control.balance;
+    const bool has_live_config = balance.max_velocity > 0.0f && balance.max_angle_deg > 0.0f;
+    command.target_pitch_deg = server_.hasArg("target") ? clampFloat(server_.arg("target").toFloat(), -20.0f, 20.0f) :
+                               (has_live_config ? balance.target_pitch_deg : command.target_pitch_deg);
+    command.kp = server_.hasArg("kp") ? clampFloat(server_.arg("kp").toFloat(), -20.0f, 20.0f) :
+                 (has_live_config ? balance.kp : command.kp);
+    command.kd = server_.hasArg("kd") ? clampFloat(server_.arg("kd").toFloat(), -5.0f, 5.0f) :
+                 (has_live_config ? balance.kd : command.kd);
+    command.max_velocity = server_.hasArg("maxv") ? clampFloat(server_.arg("maxv").toFloat(), 0.2f, 20.0f) :
+                           (has_live_config ? balance.max_velocity : command.max_velocity);
+    command.max_angle_deg = server_.hasArg("maxa") ? clampFloat(server_.arg("maxa").toFloat(), 5.0f, 60.0f) :
+                            (has_live_config ? balance.max_angle_deg : command.max_angle_deg);
+    command.has_tuning = true;
+  }
+
+  command.updated_ms = millis();
+  command.sequence = ++g_balance_command_sequence;
+  runtime_state::updateBalanceCommand(command);
+  server_.send(200, "application/json; charset=utf-8", "{\"ok\":true}");
+}
+
 String WiFiDebugServer::buildDebugPage() const {
   String html = R"RAW(
 <!DOCTYPE html>
@@ -266,6 +279,9 @@ String WiFiDebugServer::buildDebugPage() const {
     .status { margin-top: 14px; font-size: 14px; color: #666; text-align: left; line-height: 1.7; }
     .motor-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; text-align: left; }
     .motor-card { background: #f8fafc; border-radius: 8px; padding: 12px; font-size: 14px; line-height: 1.7; }
+    .balance-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 12px; }
+    .balance-grid label { display: block; text-align: left; font-size: 13px; color: #475569; }
+    .balance-grid input { width: 100%; font-size: 16px; padding: 8px; margin-top: 4px; }
     .scene { width: 220px; height: 220px; margin: 30px auto; perspective: 700px; display: flex; align-items: center; justify-content: center; }
     .cube { position: relative; width: 120px; height: 120px; transform-style: preserve-3d; transform: rotateX(0deg) rotateY(0deg) rotateZ(0deg); transition: transform 80ms linear; }
     .face { position: absolute; width: 120px; height: 120px; border: 2px solid rgba(255,255,255,0.8); display: flex; align-items: center; justify-content: center; font-weight: bold; color: white; text-shadow: 0 1px 2px rgba(0,0,0,0.35); opacity: 0.92; }
@@ -311,6 +327,18 @@ String WiFiDebugServer::buildDebugPage() const {
         <div class="motor-card" id="leftMotorStatus">左轮状态: --</div>
         <div class="motor-card" id="rightMotorStatus">右轮状态: --</div>
       </div>
+      <h3>IMU 平衡</h3>
+      <div class="balance-grid">
+        <label>目标 Pitch<input type="number" id="balanceTarget" value="0" step="0.5"></label>
+        <label>Kp<input type="number" id="balanceKp" value="0.6" step="0.1"></label>
+        <label>Kd<input type="number" id="balanceKd" value="0.03" step="0.01"></label>
+        <label>最大轮速<input type="number" id="balanceMaxV" value="4.0" step="0.5"></label>
+        <label>保护角度<input type="number" id="balanceMaxA" value="25.0" step="1.0"></label>
+      </div>
+      <button onclick="applyBalanceTuning()" style="background:#475569;">写入平衡参数</button>
+      <button onclick="setBalance(1)" style="background:#0f766e;">开启平衡</button>
+      <button onclick="setBalance(0)" style="background:#f44336;">关闭平衡</button>
+      <div class="status" id="balanceStatus">平衡状态: --</div>
     </div>
 
     <div class="card">
@@ -337,15 +365,39 @@ String WiFiDebugServer::buildDebugPage() const {
     async function setMode(mode) { await fetch('/api/motor?side=' + selectedSide() + '&mode=' + encodeURIComponent(mode), { method: 'POST' }); updateStatus(); }
     async function setSpeed(v) { await fetch('/api/motor?side=' + selectedSide() + '&enable=1&v=' + encodeURIComponent(v), { method: 'POST' }); updateStatus(); }
     async function emergencyStop() { await fetch('/api/motor?side=' + selectedSide() + '&stop=1', { method: 'POST' }); updateStatus(); }
+    async function applyBalanceTuning() {
+      const params = new URLSearchParams({
+        target: document.getElementById('balanceTarget').value,
+        kp: document.getElementById('balanceKp').value,
+        kd: document.getElementById('balanceKd').value,
+        maxv: document.getElementById('balanceMaxV').value,
+        maxa: document.getElementById('balanceMaxA').value
+      });
+      await fetch('/api/balance?' + params.toString(), { method: 'POST' });
+      updateStatus();
+    }
+    async function setBalance(enable) {
+      await applyBalanceTuning();
+      await fetch('/api/balance?enable=' + encodeURIComponent(enable), { method: 'POST' });
+      updateStatus();
+    }
     function motorText(name, m) {
       if (!m) return name + ': --';
       return name + '<br>' +
         '模式: ' + (m.openLoop ? '开环' : '闭环') +
         ' | FOC: ' + (m.focReady ? '就绪' : '未就绪') + '<br>' +
-        '使能: ' + (m.enabled ? '是' : '否') +
-        ' | 过流: ' + (m.overCurrent ? '是' : '否') + '<br>' +
+        '使能: ' + (m.enabled ? '是' : '否') + '<br>' +
         '目标速度: ' + Number(m.targetVelocity).toFixed(2) + ' rad/s<br>' +
         '实际速度: ' + Number(m.measuredVelocity).toFixed(2) + ' rad/s';
+    }
+    function balanceText(b) {
+      if (!b) return '平衡状态: --';
+      return '平衡状态: ' + (b.enabled ? '已开启' : '关闭') +
+        ' | 输出: ' + Number(b.outputVelocity).toFixed(2) + ' rad/s<br>' +
+        'Pitch: ' + Number(b.pitch).toFixed(2) + '°' +
+        ' | Rate: ' + Number(b.pitchRate).toFixed(2) + ' °/s<br>' +
+        'Kp/Kd: ' + Number(b.kp).toFixed(3) + ' / ' + Number(b.kd).toFixed(3) +
+        ' | 保护: ' + (b.fault ? '触发' : '正常');
     }
     async function updateStatus() {
       try {
@@ -354,6 +406,7 @@ String WiFiDebugServer::buildDebugPage() const {
         document.getElementById('uptime').innerText = '通信状态: 正常 | 运行: ' + data.uptime + ' | WiFi: ' + data.wifiMode + ' ' + data.ip;
         document.getElementById('leftMotorStatus').innerHTML = motorText('左轮', data.leftMotor);
         document.getElementById('rightMotorStatus').innerHTML = motorText('右轮', data.rightMotor);
+        document.getElementById('balanceStatus').innerHTML = balanceText(data.balance);
       } catch (e) {
         document.getElementById('uptime').innerText = '通信状态: 断开';
       }
@@ -395,6 +448,7 @@ String WiFiDebugServer::buildStatusJson() const {
   json += "\"ip\":\"" + currentIpString() + "\",";
   json += "\"driveEnabled\":" + String(state.control.drive_enabled ? "true" : "false") + ",";
   json += "\"driveFault\":" + String(state.control.drive_fault_level) + ",";
+  json += "\"balance\":" + balanceSnapshotJson(state.control.balance) + ",";
   json += "\"leftMotor\":" + motorSnapshotJson(state.control.left_motor) + ",";
   json += "\"rightMotor\":" + motorSnapshotJson(state.control.right_motor) + "}";
   return json;

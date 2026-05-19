@@ -22,7 +22,5 @@ int readFaultLevel();
 // 对外暴露左右电机引脚配置，便于后续驱动层复用。
 const pins::ThreePhasePwmPins& leftMotorPwmPins();
 const pins::ThreePhasePwmPins& rightMotorPwmPins();
-const pins::FeedbackPins& leftMotorFeedbackPins();
-const pins::FeedbackPins& rightMotorFeedbackPins();
 
 }  // namespace drive

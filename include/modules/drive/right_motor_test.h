@@ -16,8 +16,6 @@ void setTargetVelocity(float velocity);
 void emergencyStop();
 void setVoltageLimit(float limit);
 void setVelocityPid(float p, float i, float d, float lpf_tf);
-void setCurrentLimit(float limit);
-void setTorqueMode(DriveMotorController::TorqueMode mode);
 float getAngle();
 Status status();
 
