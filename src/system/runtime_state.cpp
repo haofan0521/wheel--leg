@@ -16,6 +16,13 @@ constexpr float kDefaultBalanceMaxAngleDeg = 25.0f;
 runtime_state::SystemSnapshot g_system_snapshot = {};
 runtime_state::MotorCommand g_left_motor_command = {};
 runtime_state::MotorCommand g_right_motor_command = {};
+runtime_state::ServoCommand g_servo_command = {
+    .has_height = false,
+    .target_height = 20.0f,
+    .time_ms = 500,
+    .updated_ms = 0,
+    .sequence = 0,
+};
 runtime_state::BalanceCommand g_balance_command = {
     .enable = false,
     .stop = false,
@@ -43,6 +50,13 @@ void begin() {
   g_system_snapshot = {};
   g_left_motor_command = {};
   g_right_motor_command = {};
+  g_servo_command = {
+      .has_height = false,
+      .target_height = 20.0f,
+      .time_ms = 500,
+      .updated_ms = 0,
+      .sequence = 0,
+  };
   g_balance_command = {
       .enable = false,
       .stop = false,
@@ -98,6 +112,12 @@ void updateBalanceCommand(const BalanceCommand& command) {
   portEXIT_CRITICAL(&g_runtime_state_mux);
 }
 
+void updateServoCommand(const ServoCommand& command) {
+  portENTER_CRITICAL(&g_runtime_state_mux);
+  g_servo_command = command;
+  portEXIT_CRITICAL(&g_runtime_state_mux);
+}
+
 MotorCommand leftMotorCommand() {
   portENTER_CRITICAL(&g_runtime_state_mux);
   const MotorCommand command = g_left_motor_command;
@@ -115,6 +135,13 @@ MotorCommand rightMotorCommand() {
 BalanceCommand balanceCommand() {
   portENTER_CRITICAL(&g_runtime_state_mux);
   const BalanceCommand command = g_balance_command;
+  portEXIT_CRITICAL(&g_runtime_state_mux);
+  return command;
+}
+
+ServoCommand servoCommand() {
+  portENTER_CRITICAL(&g_runtime_state_mux);
+  const ServoCommand command = g_servo_command;
   portEXIT_CRITICAL(&g_runtime_state_mux);
   return command;
 }

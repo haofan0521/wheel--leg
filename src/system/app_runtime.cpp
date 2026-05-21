@@ -141,6 +141,27 @@ void applyBalanceCommand() {
   }
 }
 
+void applyServoCommand() {
+  static uint32_t last_sequence = 0;
+  const auto command = runtime_state::servoCommand();
+  if (command.sequence == 0 || command.sequence == last_sequence) return;
+
+  last_sequence = command.sequence;
+  if (command.has_height) {
+    servo::IK_Result ik_res = {};
+    // 居中位置 x=2.5, 目标高度 y=command.target_height
+    if (servo::solveIK(2.5f, command.target_height, &ik_res)) {
+      servo::BusServo_Move_Param params[4] = {};
+      for (int i = 0; i < 4; ++i) {
+        params[i].id = i + 1;
+        params[i].angle = ik_res.servo_values[i];
+        params[i].time = command.time_ms;
+      }
+      servo::moveMulti(params, 4);
+    }
+  }
+}
+
 void fillMotorSnapshot(runtime_state::MotorSnapshot& snapshot,
                        const drive::DriveMotorController::Status& status,
                        const runtime_state::MotorCommand& command) {
@@ -202,6 +223,17 @@ void controlTaskEntry(void* /*context*/) {
   balance::begin();
   servo::begin();
 
+  // 上电自动控制舵机到预设高度 (例如 20cm) 进行测试
+  {
+    runtime_state::ServoCommand init_cmd = {};
+    init_cmd.has_height = true;
+    init_cmd.target_height = 20.0f;
+    init_cmd.time_ms = 1000;
+    init_cmd.updated_ms = millis();
+    init_cmd.sequence = 1;
+    runtime_state::updateServoCommand(init_cmd);
+  }
+
   TickType_t last_wake_tick = xTaskGetTickCount();
   uint32_t control_loop_counter = 0;
   uint32_t imu_sequence = 0;
@@ -212,6 +244,7 @@ void controlTaskEntry(void* /*context*/) {
     applyLeftMotorCommand();
     applyRightMotorCommand();
     applyBalanceCommand();
+    applyServoCommand();
     imu::update();
 
     const uint32_t now_ms = millis();

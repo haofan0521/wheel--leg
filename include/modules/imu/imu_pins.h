@@ -23,24 +23,24 @@ struct InterruptPins {
 };
 
 // BMI088 加速度计与陀螺仪共用一组 SPI 总线。
-inline constexpr SpiBusPins kSpiBus = {
+constexpr SpiBusPins kSpiBus = {
     .mosi = 11,
     .sck = 12,
     .miso = 13,
 };
 
 // BMI088 加速度计片选。
-inline constexpr SensorPins kAccelSensor = {
+constexpr SensorPins kAccelSensor = {
     .chip_select = 16,
 };
 
 // BMI088 陀螺仪片选。
-inline constexpr SensorPins kGyroSensor = {
+constexpr SensorPins kGyroSensor = {
     .chip_select = 17,
 };
 
 // BMI088 中断输出。
-inline constexpr InterruptPins kInterrupts = {
+constexpr InterruptPins kInterrupts = {
     .int1 = 9,
     .int3 = 10,
 };

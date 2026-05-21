@@ -17,19 +17,19 @@ struct SensorPins {
 };
 
 // 左右 MT6835 共用一组 SPI 总线。
-inline constexpr SpiBusPins kSpiBus = {
+constexpr SpiBusPins kSpiBus = {
     .sck = 35,
     .miso = 36,
     .mosi = 37,
 };
 
 // 左编码器片选。
-inline constexpr SensorPins kLeftSensor = {
+constexpr SensorPins kLeftSensor = {
     .chip_select = 7,
 };
 
 // 右编码器片选。
-inline constexpr SensorPins kRightSensor = {
+constexpr SensorPins kRightSensor = {
     .chip_select = 15,
 };
 

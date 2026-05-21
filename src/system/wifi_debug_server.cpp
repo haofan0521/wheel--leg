@@ -337,6 +337,19 @@ void WiFiDebugServer::handleServoCommand() {
     return;
   }
 
+  if (action == "set_height") {
+    const float height = server_.hasArg("h") ? clampFloat(server_.arg("h").toFloat(), 10.0f, 35.0f) : 20.0f;
+    auto command = runtime_state::servoCommand();
+    command.target_height = height;
+    command.time_ms = time_ms;
+    command.has_height = true;
+    command.updated_ms = millis();
+    command.sequence++;
+    runtime_state::updateServoCommand(command);
+    server_.send(200, "application/json; charset=utf-8", "{\"ok\":true,\"height\":" + String(height) + ",\"time\":" + String(time_ms) + "}");
+    return;
+  }
+
   if (action == "leg_mix") {
     const uint16_t right_center = server_.hasArg("right") ?
                                   static_cast<uint16_t>(clampFloat(server_.arg("right").toFloat(), 0.0f, 1000.0f)) :
@@ -488,13 +501,14 @@ String WiFiDebugServer::buildDebugPage() const {
       <button onclick="moveAllServos()" style="background:#475569;">同步移动 1-4</button>
       <button onclick="readServos()" style="background:#0f766e;">读取位置</button>
       <button onclick="readServoBattery()" style="background:#0369a1;">读取控制板电压</button>
-      <h3>简易腿部解算</h3>
+      <h3>高度与简易解算</h3>
       <div class="balance-grid">
+        <label>预设高度 (cm)<input type="number" id="legHeight" value="20" step="1" min="10" max="35"></label>
         <label>右腿中心<input type="number" id="legRightCenter" value="500" step="10" min="0" max="1000"></label>
         <label>左腿中心<input type="number" id="legLeftCenter" value="500" step="10" min="0" max="1000"></label>
         <label>前后差值<input type="number" id="legPitchMix" value="0" step="10" min="-300" max="300"></label>
-        <label>映射说明<input value="1右后 2右前 3左后 4左前" readonly></label>
       </div>
+      <button onclick="applyHeight()" style="background:#0f766e;">应用预设高度</button>
       <button onclick="applyLegMix()" style="background:#7c3aed;">应用简易解算</button>
       <div class="status" id="servoStatus">舵机状态: --</div>
     </div>
@@ -573,6 +587,12 @@ String WiFiDebugServer::buildDebugPage() const {
         pitch: document.getElementById('legPitchMix').value
       });
       await fetch('/api/servo?' + params.toString(), { method: 'POST' });
+      updateStatus();
+    }
+    async function applyHeight() {
+      const h = document.getElementById('legHeight').value;
+      const time = servoTime();
+      await fetch(`/api/servo?action=set_height&h=${h}&time=${time}`, { method: 'POST' });
       updateStatus();
     }
     function motorText(name, m) {

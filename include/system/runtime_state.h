@@ -112,6 +112,14 @@ struct ImuSnapshot {
   bool valid;
 };
 
+struct ServoCommand {
+  bool has_height;
+  float target_height;
+  uint16_t time_ms;
+  uint32_t updated_ms;
+  uint32_t sequence;
+};
+
 struct SystemSnapshot {
   ControlSnapshot control;
   ServiceSnapshot service;
@@ -125,9 +133,11 @@ void updateImuSnapshot(const ImuSnapshot& snapshot);
 void updateLeftMotorCommand(const MotorCommand& command);
 void updateRightMotorCommand(const MotorCommand& command);
 void updateBalanceCommand(const BalanceCommand& command);
+void updateServoCommand(const ServoCommand& command);
 MotorCommand leftMotorCommand();
 MotorCommand rightMotorCommand();
 BalanceCommand balanceCommand();
+ServoCommand servoCommand();
 SystemSnapshot snapshot();
 
 }  // namespace runtime_state

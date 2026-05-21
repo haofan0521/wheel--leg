@@ -12,11 +12,11 @@ struct ThreePhasePwmPins {
 };
 
 // 电驱总使能与故障反馈引脚。
-inline constexpr uint8_t kEnable = 14;
-inline constexpr uint8_t kFault = 21;
+constexpr uint8_t kEnable = 14;
+constexpr uint8_t kFault = 21;
 
 // 左轮电机三相 PWM 输出。
-inline constexpr ThreePhasePwmPins kLeftMotorPwm = {
+constexpr ThreePhasePwmPins kLeftMotorPwm = {
     .phase_a = 39,
     .phase_b = 40,
     .phase_c = 41,
@@ -24,7 +24,7 @@ inline constexpr ThreePhasePwmPins kLeftMotorPwm = {
 
 // 右轮电机三相 PWM 输出。
 // 注意：原设计的 48, 47 已恢复（用户确认使用 47 48）。
-inline constexpr ThreePhasePwmPins kRightMotorPwm = {
+constexpr ThreePhasePwmPins kRightMotorPwm = {
     .phase_a = 48,
     .phase_b = 47,
     .phase_c = 42,
