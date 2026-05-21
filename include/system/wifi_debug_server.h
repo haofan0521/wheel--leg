@@ -44,6 +44,9 @@ class WiFiDebugServer {
   // 处理 IMU 平衡控制指令。
   void handleBalanceCommand();
 
+  // 处理总线舵机调试指令。
+  void handleServoCommand();
+
   // 生成 HTML 调试页面。
   String buildDebugPage() const;
 

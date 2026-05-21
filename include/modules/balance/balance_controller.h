@@ -8,12 +8,17 @@ struct Config {
   float target_pitch_deg;
   float kp;
   float kd;
+  float kv;
+  float output_direction;
   float max_velocity;
+  float start_angle_deg;
   float max_angle_deg;
 };
 
 struct Input {
   float pitch_deg;
+  float pitch_rate_dps;
+  float wheel_velocity;
   uint32_t now_ms;
 };
 
@@ -24,10 +29,14 @@ struct Output {
   float target_pitch_deg;
   float pitch_deg;
   float pitch_rate_dps;
+  float wheel_velocity;
   float output_velocity;
   float kp;
   float kd;
+  float kv;
+  float output_direction;
   float max_velocity;
+  float start_angle_deg;
   float max_angle_deg;
 };
 

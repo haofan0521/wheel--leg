@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "config/wifi_debug_config.h"
+#include "modules/servo/servo_module.h"
 #include "system/runtime_state.h"
 
 namespace {
@@ -99,24 +100,73 @@ String motorSnapshotJson(const runtime_state::MotorSnapshot& motor) {
 }
 
 String balanceSnapshotJson(const runtime_state::BalanceSnapshot& balance) {
-  char buffer[384];
+  char buffer[512];
   snprintf(buffer, sizeof(buffer),
            "{\"enabled\":%s,\"active\":%s,\"fault\":%s,"
-           "\"targetPitch\":%.3f,\"pitch\":%.3f,\"pitchRate\":%.3f,\"outputVelocity\":%.3f,"
-           "\"kp\":%.4f,\"kd\":%.4f,\"maxVelocity\":%.3f,\"maxAngle\":%.3f,\"lastUpdateMs\":%lu}",
+           "\"targetPitch\":%.3f,\"pitch\":%.3f,\"pitchRate\":%.3f,"
+           "\"wheelVelocity\":%.3f,\"outputVelocity\":%.3f,"
+           "\"kp\":%.4f,\"kd\":%.4f,\"kv\":%.4f,\"direction\":%.1f,"
+           "\"maxVelocity\":%.3f,\"startAngle\":%.3f,\"maxAngle\":%.3f,\"lastUpdateMs\":%lu}",
            balance.enabled ? "true" : "false",
            balance.active ? "true" : "false",
            balance.fault ? "true" : "false",
            balance.target_pitch_deg,
            balance.pitch_deg,
            balance.pitch_rate_dps,
+           balance.wheel_velocity,
            balance.output_velocity,
            balance.kp,
            balance.kd,
+           balance.kv,
+           balance.output_direction,
            balance.max_velocity,
+           balance.start_angle_deg,
            balance.max_angle_deg,
            (unsigned long)balance.last_update_ms);
   return String(buffer);
+}
+
+String servoStatusJson() {
+  const auto status = servo::status();
+  const auto read_result = servo::lastReadResult();
+  String json = "{\"initialized\":";
+  json += status.initialized ? "true" : "false";
+  json += ",\"rxFlag\":";
+  json += String(status.rx_flag);
+  json += ",\"expectedLen\":";
+  json += String(status.expected_len);
+  json += ",\"availableBytes\":";
+  json += String(status.available_bytes);
+  json += ",\"lastCommand\":";
+  json += String(status.last_command);
+  json += ",\"lastRxLen\":";
+  json += String(status.last_rx_len);
+  json += ",\"lastParseOk\":";
+  json += status.last_parse_ok ? "true" : "false";
+  json += ",\"batteryMv\":";
+  json += String(status.battery_mv);
+  json += ",\"readValid\":";
+  json += read_result.valid ? "true" : "false";
+  json += ",\"positions\":[";
+  for (uint8_t id = 1; id <= 4; ++id) {
+    if (id > 1) json += ",";
+    json += "{\"id\":";
+    json += String(id);
+    json += ",\"position\":";
+    int position = -1;
+    if (read_result.valid) {
+      for (uint8_t i = 0; i < read_result.count; ++i) {
+        if (read_result.id[i] == id) {
+          position = read_result.position[i];
+          break;
+        }
+      }
+    }
+    json += String(position);
+    json += "}";
+  }
+  json += "]}";
+  return json;
 }
 
 uint32_t g_motor_command_sequence = 0;
@@ -154,6 +204,7 @@ void WiFiDebugServer::configureRoutes() {
   server_.on("/api/restart", HTTP_POST, [this]() { handleRestart(); });
   server_.on("/api/motor", HTTP_POST, [this]() { handleMotorCommand(); });
   server_.on("/api/balance", HTTP_POST, [this]() { handleBalanceCommand(); });
+  server_.on("/api/servo", HTTP_POST, [this]() { handleServoCommand(); });
   server_.onNotFound([this]() { server_.send(404, "text/plain", "Not Found"); });
 }
 
@@ -235,7 +286,9 @@ void WiFiDebugServer::handleBalanceCommand() {
     command.has_enable = true;
   }
   if (server_.hasArg("target") || server_.hasArg("kp") || server_.hasArg("kd") ||
-      server_.hasArg("maxv") || server_.hasArg("maxa")) {
+      server_.hasArg("kv") ||
+      server_.hasArg("dir") || server_.hasArg("maxv") || server_.hasArg("starta") ||
+      server_.hasArg("maxa")) {
     const auto state = runtime_state::snapshot();
     const auto& balance = state.control.balance;
     const bool has_live_config = balance.max_velocity > 0.0f && balance.max_angle_deg > 0.0f;
@@ -245,8 +298,15 @@ void WiFiDebugServer::handleBalanceCommand() {
                  (has_live_config ? balance.kp : command.kp);
     command.kd = server_.hasArg("kd") ? clampFloat(server_.arg("kd").toFloat(), -5.0f, 5.0f) :
                  (has_live_config ? balance.kd : command.kd);
+    command.kv = server_.hasArg("kv") ? clampFloat(server_.arg("kv").toFloat(), 0.0f, 5.0f) :
+                 (has_live_config ? balance.kv : command.kv);
+    command.output_direction = server_.hasArg("dir") ?
+                               (server_.arg("dir").toFloat() >= 0.0f ? 1.0f : -1.0f) :
+                               (has_live_config ? balance.output_direction : command.output_direction);
     command.max_velocity = server_.hasArg("maxv") ? clampFloat(server_.arg("maxv").toFloat(), 0.2f, 20.0f) :
                            (has_live_config ? balance.max_velocity : command.max_velocity);
+    command.start_angle_deg = server_.hasArg("starta") ? clampFloat(server_.arg("starta").toFloat(), 1.0f, 30.0f) :
+                              (has_live_config ? balance.start_angle_deg : command.start_angle_deg);
     command.max_angle_deg = server_.hasArg("maxa") ? clampFloat(server_.arg("maxa").toFloat(), 5.0f, 60.0f) :
                             (has_live_config ? balance.max_angle_deg : command.max_angle_deg);
     command.has_tuning = true;
@@ -255,6 +315,75 @@ void WiFiDebugServer::handleBalanceCommand() {
   command.updated_ms = millis();
   command.sequence = ++g_balance_command_sequence;
   runtime_state::updateBalanceCommand(command);
+  server_.send(200, "application/json; charset=utf-8", "{\"ok\":true}");
+}
+
+void WiFiDebugServer::handleServoCommand() {
+  const String action = server_.hasArg("action") ? server_.arg("action") : "move";
+  const uint16_t time_ms = server_.hasArg("time") ?
+                           static_cast<uint16_t>(clampFloat(server_.arg("time").toFloat(), 0.0f, 10000.0f)) :
+                           500;
+
+  if (action == "read") {
+    uint8_t ids[4] = {1, 2, 3, 4};
+    servo::readMulti(ids, 4);
+    server_.send(200, "application/json; charset=utf-8", "{\"ok\":true,\"message\":\"read requested\"}");
+    return;
+  }
+
+  if (action == "battery") {
+    servo::readBatteryVoltage();
+    server_.send(200, "application/json; charset=utf-8", "{\"ok\":true,\"message\":\"battery requested\"}");
+    return;
+  }
+
+  if (action == "leg_mix") {
+    const uint16_t right_center = server_.hasArg("right") ?
+                                  static_cast<uint16_t>(clampFloat(server_.arg("right").toFloat(), 0.0f, 1000.0f)) :
+                                  500;
+    const uint16_t left_center = server_.hasArg("left") ?
+                                 static_cast<uint16_t>(clampFloat(server_.arg("left").toFloat(), 0.0f, 1000.0f)) :
+                                 500;
+    const float pitch = server_.hasArg("pitch") ?
+                        clampFloat(server_.arg("pitch").toFloat(), -300.0f, 300.0f) :
+                        0.0f;
+
+    // 简易腿部混控：ID1=右后，ID2=右前，ID3=左后，ID4=左前。
+    // 左右腿前后差值采用镜像关系，先用于验证四个舵机方向与联动关系。
+    servo::BusServo_Move_Param params[4] = {};
+    params[0] = {1, static_cast<uint16_t>(clampFloat(right_center + pitch, 0.0f, 1000.0f)), time_ms, 0};
+    params[1] = {2, static_cast<uint16_t>(clampFloat(right_center - pitch, 0.0f, 1000.0f)), time_ms, 0};
+    params[2] = {3, static_cast<uint16_t>(clampFloat(left_center - pitch, 0.0f, 1000.0f)), time_ms, 0};
+    params[3] = {4, static_cast<uint16_t>(clampFloat(left_center + pitch, 0.0f, 1000.0f)), time_ms, 0};
+    servo::moveMulti(params, 4);
+    server_.send(200, "application/json; charset=utf-8", "{\"ok\":true}");
+    return;
+  }
+
+  if (action == "move_all") {
+    servo::BusServo_Move_Param params[4] = {};
+    for (uint8_t i = 0; i < 4; ++i) {
+      const uint8_t id = i + 1;
+      const String arg_name = "p" + String(id);
+      params[i].id = id;
+      params[i].angle = server_.hasArg(arg_name) ?
+                        static_cast<uint16_t>(clampFloat(server_.arg(arg_name).toFloat(), 0.0f, 1000.0f)) :
+                        500;
+      params[i].time = time_ms;
+      params[i].feedback = 0;
+    }
+    servo::moveMulti(params, 4);
+    server_.send(200, "application/json; charset=utf-8", "{\"ok\":true}");
+    return;
+  }
+
+  const uint8_t id = server_.hasArg("id") ?
+                     static_cast<uint8_t>(clampFloat(server_.arg("id").toFloat(), 1.0f, 4.0f)) :
+                     1;
+  const uint16_t position = server_.hasArg("position") ?
+                            static_cast<uint16_t>(clampFloat(server_.arg("position").toFloat(), 0.0f, 1000.0f)) :
+                            500;
+  servo::moveServo(id, position, time_ms);
   server_.send(200, "application/json; charset=utf-8", "{\"ok\":true}");
 }
 
@@ -282,6 +411,9 @@ String WiFiDebugServer::buildDebugPage() const {
     .balance-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 12px; }
     .balance-grid label { display: block; text-align: left; font-size: 13px; color: #475569; }
     .balance-grid input { width: 100%; font-size: 16px; padding: 8px; margin-top: 4px; }
+    .servo-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 12px; }
+    .servo-item { background: #f8fafc; border-radius: 8px; padding: 10px; text-align: left; font-size: 13px; color: #475569; }
+    .servo-item input { width: 100%; font-size: 16px; padding: 8px; margin: 4px 0 8px; }
     .scene { width: 220px; height: 220px; margin: 30px auto; perspective: 700px; display: flex; align-items: center; justify-content: center; }
     .cube { position: relative; width: 120px; height: 120px; transform-style: preserve-3d; transform: rotateX(0deg) rotateY(0deg) rotateZ(0deg); transition: transform 80ms linear; }
     .face { position: absolute; width: 120px; height: 120px; border: 2px solid rgba(255,255,255,0.8); display: flex; align-items: center; justify-content: center; font-weight: bold; color: white; text-shadow: 0 1px 2px rgba(0,0,0,0.35); opacity: 0.92; }
@@ -332,13 +464,39 @@ String WiFiDebugServer::buildDebugPage() const {
         <label>目标 Pitch<input type="number" id="balanceTarget" value="0" step="0.5"></label>
         <label>Kp<input type="number" id="balanceKp" value="0.6" step="0.1"></label>
         <label>Kd<input type="number" id="balanceKd" value="0.03" step="0.01"></label>
+        <label>Kv<input type="number" id="balanceKv" value="0.0" step="0.02"></label>
+        <label>输出方向<input type="number" id="balanceDir" value="1" step="2"></label>
         <label>最大轮速<input type="number" id="balanceMaxV" value="4.0" step="0.5"></label>
+        <label>启动角度<input type="number" id="balanceStartA" value="10.0" step="1.0"></label>
         <label>保护角度<input type="number" id="balanceMaxA" value="25.0" step="1.0"></label>
       </div>
       <button onclick="applyBalanceTuning()" style="background:#475569;">写入平衡参数</button>
       <button onclick="setBalance(1)" style="background:#0f766e;">开启平衡</button>
       <button onclick="setBalance(0)" style="background:#f44336;">关闭平衡</button>
       <div class="status" id="balanceStatus">平衡状态: --</div>
+      <h3>幻尔总线舵机</h3>
+      <div class="input-grp">
+        <label>移动时间 (ms): </label>
+        <input type="number" id="servoTime" value="500" step="100" min="0" max="10000" style="font-size: 16px; width: 90px; text-align: center;">
+      </div>
+      <div class="servo-grid">
+        <div class="servo-item">ID 1<input type="number" id="servoPos1" value="500" step="10" min="0" max="1000"><button onclick="moveServo(1)" style="background:#2563eb;">移动</button><div id="servoRead1">位置: --</div></div>
+        <div class="servo-item">ID 2<input type="number" id="servoPos2" value="500" step="10" min="0" max="1000"><button onclick="moveServo(2)" style="background:#2563eb;">移动</button><div id="servoRead2">位置: --</div></div>
+        <div class="servo-item">ID 3<input type="number" id="servoPos3" value="500" step="10" min="0" max="1000"><button onclick="moveServo(3)" style="background:#2563eb;">移动</button><div id="servoRead3">位置: --</div></div>
+        <div class="servo-item">ID 4<input type="number" id="servoPos4" value="500" step="10" min="0" max="1000"><button onclick="moveServo(4)" style="background:#2563eb;">移动</button><div id="servoRead4">位置: --</div></div>
+      </div>
+      <button onclick="moveAllServos()" style="background:#475569;">同步移动 1-4</button>
+      <button onclick="readServos()" style="background:#0f766e;">读取位置</button>
+      <button onclick="readServoBattery()" style="background:#0369a1;">读取控制板电压</button>
+      <h3>简易腿部解算</h3>
+      <div class="balance-grid">
+        <label>右腿中心<input type="number" id="legRightCenter" value="500" step="10" min="0" max="1000"></label>
+        <label>左腿中心<input type="number" id="legLeftCenter" value="500" step="10" min="0" max="1000"></label>
+        <label>前后差值<input type="number" id="legPitchMix" value="0" step="10" min="-300" max="300"></label>
+        <label>映射说明<input value="1右后 2右前 3左后 4左前" readonly></label>
+      </div>
+      <button onclick="applyLegMix()" style="background:#7c3aed;">应用简易解算</button>
+      <div class="status" id="servoStatus">舵机状态: --</div>
     </div>
 
     <div class="card">
@@ -370,7 +528,10 @@ String WiFiDebugServer::buildDebugPage() const {
         target: document.getElementById('balanceTarget').value,
         kp: document.getElementById('balanceKp').value,
         kd: document.getElementById('balanceKd').value,
+        kv: document.getElementById('balanceKv').value,
+        dir: document.getElementById('balanceDir').value,
         maxv: document.getElementById('balanceMaxV').value,
+        starta: document.getElementById('balanceStartA').value,
         maxa: document.getElementById('balanceMaxA').value
       });
       await fetch('/api/balance?' + params.toString(), { method: 'POST' });
@@ -379,6 +540,39 @@ String WiFiDebugServer::buildDebugPage() const {
     async function setBalance(enable) {
       await applyBalanceTuning();
       await fetch('/api/balance?enable=' + encodeURIComponent(enable), { method: 'POST' });
+      updateStatus();
+    }
+    function servoTime() { return document.getElementById('servoTime').value; }
+    async function moveServo(id) {
+      const pos = document.getElementById('servoPos' + id).value;
+      await fetch('/api/servo?action=move&id=' + encodeURIComponent(id) +
+        '&position=' + encodeURIComponent(pos) +
+        '&time=' + encodeURIComponent(servoTime()), { method: 'POST' });
+      updateStatus();
+    }
+    async function moveAllServos() {
+      const params = new URLSearchParams({ action: 'move_all', time: servoTime() });
+      for (let id = 1; id <= 4; id++) params.set('p' + id, document.getElementById('servoPos' + id).value);
+      await fetch('/api/servo?' + params.toString(), { method: 'POST' });
+      updateStatus();
+    }
+    async function readServos() {
+      await fetch('/api/servo?action=read', { method: 'POST' });
+      setTimeout(updateStatus, 80);
+    }
+    async function readServoBattery() {
+      await fetch('/api/servo?action=battery', { method: 'POST' });
+      setTimeout(updateStatus, 80);
+    }
+    async function applyLegMix() {
+      const params = new URLSearchParams({
+        action: 'leg_mix',
+        time: servoTime(),
+        right: document.getElementById('legRightCenter').value,
+        left: document.getElementById('legLeftCenter').value,
+        pitch: document.getElementById('legPitchMix').value
+      });
+      await fetch('/api/servo?' + params.toString(), { method: 'POST' });
       updateStatus();
     }
     function motorText(name, m) {
@@ -396,8 +590,32 @@ String WiFiDebugServer::buildDebugPage() const {
         ' | 输出: ' + Number(b.outputVelocity).toFixed(2) + ' rad/s<br>' +
         'Pitch: ' + Number(b.pitch).toFixed(2) + '°' +
         ' | Rate: ' + Number(b.pitchRate).toFixed(2) + ' °/s<br>' +
-        'Kp/Kd: ' + Number(b.kp).toFixed(3) + ' / ' + Number(b.kd).toFixed(3) +
+        '轮速: ' + Number(b.wheelVelocity).toFixed(2) + ' rad/s<br>' +
+        'Kp/Kd/Kv: ' + Number(b.kp).toFixed(3) + ' / ' + Number(b.kd).toFixed(3) + ' / ' + Number(b.kv).toFixed(3) +
+        ' | Dir: ' + Number(b.direction).toFixed(0) + '<br>' +
+        '启动/保护角: ' + Number(b.startAngle).toFixed(1) + '° / ' + Number(b.maxAngle).toFixed(1) + '°' +
         ' | 保护: ' + (b.fault ? '触发' : '正常');
+    }
+    function updateServoStatus(s) {
+      if (!s) {
+        document.getElementById('servoStatus').innerText = '舵机状态: --';
+        return;
+      }
+      document.getElementById('servoStatus').innerText =
+        '舵机状态: ' + (s.initialized ? '已初始化' : '未初始化') +
+        ' | RX: ' + s.rxFlag +
+        ' | 期望/缓存: ' + s.expectedLen + '/' + s.availableBytes +
+        ' | 命令: 0x' + Number(s.lastCommand).toString(16).padStart(2, '0') +
+        ' | 收到: ' + s.lastRxLen +
+        ' | 解析: ' + (s.lastParseOk ? '成功' : '失败') +
+        ' | 电压: ' + (Number(s.batteryMv) > 0 ? (Number(s.batteryMv) / 1000).toFixed(2) + 'V' : '--') +
+        ' | 读回: ' + (s.readValid ? '有效' : '无');
+      if (Array.isArray(s.positions)) {
+        s.positions.forEach((item) => {
+          const el = document.getElementById('servoRead' + item.id);
+          if (el) el.innerText = '位置: ' + (Number(item.position) >= 0 ? item.position : '--');
+        });
+      }
     }
     async function updateStatus() {
       try {
@@ -407,6 +625,7 @@ String WiFiDebugServer::buildDebugPage() const {
         document.getElementById('leftMotorStatus').innerHTML = motorText('左轮', data.leftMotor);
         document.getElementById('rightMotorStatus').innerHTML = motorText('右轮', data.rightMotor);
         document.getElementById('balanceStatus').innerHTML = balanceText(data.balance);
+        updateServoStatus(data.servo);
       } catch (e) {
         document.getElementById('uptime').innerText = '通信状态: 断开';
       }
@@ -449,6 +668,7 @@ String WiFiDebugServer::buildStatusJson() const {
   json += "\"driveEnabled\":" + String(state.control.drive_enabled ? "true" : "false") + ",";
   json += "\"driveFault\":" + String(state.control.drive_fault_level) + ",";
   json += "\"balance\":" + balanceSnapshotJson(state.control.balance) + ",";
+  json += "\"servo\":" + servoStatusJson() + ",";
   json += "\"leftMotor\":" + motorSnapshotJson(state.control.left_motor) + ",";
   json += "\"rightMotor\":" + motorSnapshotJson(state.control.right_motor) + "}";
   return json;

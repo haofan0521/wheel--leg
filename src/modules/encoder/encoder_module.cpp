@@ -7,6 +7,7 @@
 namespace {
 
 SPIClass* g_spi_bus = nullptr;
+constexpr float kVelocityLpfTf = 0.02f;
 
 void configureSpiBusPins(const encoder::pins::SpiBusPins& spi_pins) {
   if (g_spi_bus == nullptr) {
@@ -61,6 +62,35 @@ class MT6835Sensor : public Sensor {
 
 MT6835Sensor g_left_sensor(encoder::pins::kLeftSensor.chip_select);
 MT6835Sensor g_right_sensor(encoder::pins::kRightSensor.chip_select);
+float g_left_filtered_velocity = 0.0f;
+float g_right_filtered_velocity = 0.0f;
+uint32_t g_left_velocity_update_us = 0;
+uint32_t g_right_velocity_update_us = 0;
+bool g_left_velocity_ready = false;
+bool g_right_velocity_ready = false;
+
+float filterVelocity(const float raw_velocity,
+                     float& filtered_velocity,
+                     uint32_t& update_us,
+                     bool& ready) {
+  const uint32_t now_us = micros();
+  if (!ready) {
+    filtered_velocity = raw_velocity;
+    update_us = now_us;
+    ready = true;
+    return filtered_velocity;
+  }
+
+  float dt = static_cast<float>(now_us - update_us) * 1e-6f;
+  update_us = now_us;
+  if (dt <= 0.0f || dt > 0.5f) {
+    dt = 1e-3f;
+  }
+
+  const float alpha = dt / (kVelocityLpfTf + dt);
+  filtered_velocity += alpha * (raw_velocity - filtered_velocity);
+  return filtered_velocity;
+}
 
 }  // namespace
 
@@ -87,7 +117,10 @@ float leftAngle() {
 
 float leftVelocity() {
   g_left_sensor.update();
-  return g_left_sensor.getVelocity();
+  return filterVelocity(g_left_sensor.getVelocity(),
+                        g_left_filtered_velocity,
+                        g_left_velocity_update_us,
+                        g_left_velocity_ready);
 }
 
 float rightAngle() {
@@ -97,7 +130,10 @@ float rightAngle() {
 
 float rightVelocity() {
   g_right_sensor.update();
-  return g_right_sensor.getVelocity();
+  return filterVelocity(g_right_sensor.getVelocity(),
+                        g_right_filtered_velocity,
+                        g_right_velocity_update_us,
+                        g_right_velocity_ready);
 }
 
 void testPrintEncoders() {
@@ -105,9 +141,15 @@ void testPrintEncoders() {
   g_right_sensor.update();
 
   const float left_angle_deg = g_left_sensor.getAngle() * 180.0f / _PI;
-  const float left_vel_rad_s = g_left_sensor.getVelocity();
+  const float left_vel_rad_s = filterVelocity(g_left_sensor.getVelocity(),
+                                              g_left_filtered_velocity,
+                                              g_left_velocity_update_us,
+                                              g_left_velocity_ready);
   const float right_angle_deg = g_right_sensor.getAngle() * 180.0f / _PI;
-  const float right_vel_rad_s = g_right_sensor.getVelocity();
+  const float right_vel_rad_s = filterVelocity(g_right_sensor.getVelocity(),
+                                               g_right_filtered_velocity,
+                                               g_right_velocity_update_us,
+                                               g_right_velocity_ready);
 
   Serial.printf("[Encoder] L Pos: %.2f deg | L Vel: %.2f rad/s | R Pos: %.2f deg | R Vel: %.2f rad/s\n",
                 left_angle_deg,
@@ -126,7 +168,10 @@ void testReadLeftEncoder() {
                 static_cast<unsigned long>(raw_frame),
                 static_cast<unsigned long>(raw_angle),
                 angle_deg,
-                g_left_sensor.getVelocity());
+                filterVelocity(g_left_sensor.getVelocity(),
+                               g_left_filtered_velocity,
+                               g_left_velocity_update_us,
+                               g_left_velocity_ready));
 }
 
 void testReadRightEncoder() {
@@ -139,7 +184,10 @@ void testReadRightEncoder() {
                 static_cast<unsigned long>(raw_frame),
                 static_cast<unsigned long>(raw_angle),
                 angle_deg,
-                g_right_sensor.getVelocity());
+                filterVelocity(g_right_sensor.getVelocity(),
+                               g_right_filtered_velocity,
+                               g_right_velocity_update_us,
+                               g_right_velocity_ready));
 }
 
 }  // namespace encoder

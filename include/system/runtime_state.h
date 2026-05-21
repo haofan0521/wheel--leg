@@ -54,7 +54,10 @@ struct BalanceCommand {
   float target_pitch_deg;
   float kp;
   float kd;
+  float kv;
+  float output_direction;
   float max_velocity;
+  float start_angle_deg;
   float max_angle_deg;
   uint32_t updated_ms;
   uint32_t sequence;
@@ -67,10 +70,14 @@ struct BalanceSnapshot {
   float target_pitch_deg;
   float pitch_deg;
   float pitch_rate_dps;
+  float wheel_velocity;
   float output_velocity;
   float kp;
   float kd;
+  float kv;
+  float output_direction;
   float max_velocity;
+  float start_angle_deg;
   float max_angle_deg;
   uint32_t last_update_ms;
 };

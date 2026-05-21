@@ -7,7 +7,10 @@ namespace {
 constexpr float kDefaultBalanceTargetPitchDeg = 0.0f;
 constexpr float kDefaultBalanceKp = 0.6f;
 constexpr float kDefaultBalanceKd = 0.03f;
+constexpr float kDefaultBalanceKv = 0.0f;
+constexpr float kDefaultBalanceOutputDirection = 1.0f;
 constexpr float kDefaultBalanceMaxVelocity = 4.0f;
+constexpr float kDefaultBalanceStartAngleDeg = 10.0f;
 constexpr float kDefaultBalanceMaxAngleDeg = 25.0f;
 
 runtime_state::SystemSnapshot g_system_snapshot = {};
@@ -21,7 +24,10 @@ runtime_state::BalanceCommand g_balance_command = {
     .target_pitch_deg = kDefaultBalanceTargetPitchDeg,
     .kp = kDefaultBalanceKp,
     .kd = kDefaultBalanceKd,
+    .kv = kDefaultBalanceKv,
+    .output_direction = kDefaultBalanceOutputDirection,
     .max_velocity = kDefaultBalanceMaxVelocity,
+    .start_angle_deg = kDefaultBalanceStartAngleDeg,
     .max_angle_deg = kDefaultBalanceMaxAngleDeg,
     .updated_ms = 0,
     .sequence = 0,
@@ -45,7 +51,10 @@ void begin() {
       .target_pitch_deg = kDefaultBalanceTargetPitchDeg,
       .kp = kDefaultBalanceKp,
       .kd = kDefaultBalanceKd,
+      .kv = kDefaultBalanceKv,
+      .output_direction = kDefaultBalanceOutputDirection,
       .max_velocity = kDefaultBalanceMaxVelocity,
+      .start_angle_deg = kDefaultBalanceStartAngleDeg,
       .max_angle_deg = kDefaultBalanceMaxAngleDeg,
       .updated_ms = 0,
       .sequence = 0,

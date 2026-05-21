@@ -23,6 +23,8 @@ TaskHandle_t g_control_task_handle = nullptr;
 TaskHandle_t g_service_task_handle = nullptr;
 bool g_runtime_started = false;
 constexpr uint32_t kMotorCommandTimeoutMs = 10000;
+constexpr float kLeftForwardVelocitySign = -1.0f;
+constexpr float kRightForwardVelocitySign = 1.0f;
 uint32_t g_last_left_motor_command_sequence = 0;
 uint32_t g_last_right_motor_command_sequence = 0;
 bool g_balance_drive_prepared = false;
@@ -113,7 +115,10 @@ void applyBalanceCommand() {
     config.target_pitch_deg = command.target_pitch_deg;
     config.kp = command.kp;
     config.kd = command.kd;
+    config.kv = command.kv;
+    config.output_direction = command.output_direction;
     config.max_velocity = command.max_velocity;
+    config.start_angle_deg = command.start_angle_deg;
     config.max_angle_deg = command.max_angle_deg;
     balance::setConfig(config);
   }
@@ -170,10 +175,14 @@ void fillBalanceSnapshot(runtime_state::BalanceSnapshot& snapshot,
   snapshot.target_pitch_deg = output.target_pitch_deg;
   snapshot.pitch_deg = output.pitch_deg;
   snapshot.pitch_rate_dps = output.pitch_rate_dps;
+  snapshot.wheel_velocity = output.wheel_velocity;
   snapshot.output_velocity = output.output_velocity;
   snapshot.kp = output.kp;
   snapshot.kd = output.kd;
+  snapshot.kv = output.kv;
+  snapshot.output_direction = output.output_direction;
   snapshot.max_velocity = output.max_velocity;
+  snapshot.start_angle_deg = output.start_angle_deg;
   snapshot.max_angle_deg = output.max_angle_deg;
   snapshot.last_update_ms = now_ms;
 }
@@ -186,6 +195,8 @@ void controlTaskEntry(void* /*context*/) {
 
   drive::left_motor_test::init();
   drive::right_motor_test::init();
+  drive::left_motor_test::setOpenLoop(false);
+  drive::right_motor_test::setOpenLoop(false);
 
   imu::begin();
   balance::begin();
@@ -206,6 +217,10 @@ void controlTaskEntry(void* /*context*/) {
     const uint32_t now_ms = millis();
     const auto attitude = imu::getAttitude();
     const auto imu_data = imu::getData();
+    const float pitch_rate_dps = imu_data.gyro_y * 180.0f / PI;
+    const float left_forward_velocity = encoder::leftVelocity() * kLeftForwardVelocitySign;
+    const float right_forward_velocity = encoder::rightVelocity() * kRightForwardVelocitySign;
+    const float wheel_velocity = 0.5f * (left_forward_velocity + right_forward_velocity);
     runtime_state::ImuSnapshot imu_snapshot = {};
     imu_snapshot.pitch_deg = attitude.pitch;
     imu_snapshot.roll_deg = attitude.roll;
@@ -218,6 +233,8 @@ void controlTaskEntry(void* /*context*/) {
 
     const auto balance_output = balance::update({
         .pitch_deg = attitude.pitch,
+        .pitch_rate_dps = pitch_rate_dps,
+        .wheel_velocity = wheel_velocity,
         .now_ms = now_ms,
     });
     if (balance_output.active) {
@@ -268,6 +285,7 @@ void serviceTaskEntry(void* /*context*/) {
   for (;;) {
     ++service_loop_counter;
     WiFiDebugServer::instance().loop();
+    servo::update();
 
     runtime_state::ServiceSnapshot snapshot = {};
     snapshot.loop_counter = service_loop_counter;
