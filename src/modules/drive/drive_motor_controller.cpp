@@ -207,8 +207,9 @@ void DriveMotorController::update() {
       return;
     }
 
-    const float measured_velocity = config_.read_velocity ? config_.read_velocity() : 0.0f;
-    updateVelocityTelemetry(measured_velocity);
+    const float raw_velocity = config_.read_velocity ? config_.read_velocity() : 0.0f;
+    const float normalized_velocity = raw_velocity * config_.feedback_direction;
+    updateVelocityTelemetry(normalized_velocity);
     updateOpenLoopPwm();
     return;
   }
@@ -224,8 +225,9 @@ void DriveMotorController::update() {
     return;
   }
 
-  const float measured_velocity = config_.read_velocity ? config_.read_velocity() : 0.0f;
-  updateVelocityTelemetry(measured_velocity);
+  const float raw_velocity = config_.read_velocity ? config_.read_velocity() : 0.0f;
+  const float normalized_velocity = raw_velocity * config_.feedback_direction;
+  updateVelocityTelemetry(normalized_velocity);
 
   if (foc_ready_) {
     motor_.move(target_velocity_ * config_.velocity_direction);
@@ -335,7 +337,8 @@ DriveMotorController::Status DriveMotorController::status() {
   current.emergency_stopped = emergency_stopped_;
   current.open_loop = open_loop_;
   current.target_velocity = target_velocity_;
-  current.measured_velocity = config_.read_velocity ? config_.read_velocity() : 0.0f;
+  const float raw_velocity = config_.read_velocity ? config_.read_velocity() : 0.0f;
+  current.measured_velocity = raw_velocity * config_.feedback_direction;
   current.shaft_angle = config_.read_angle ? config_.read_angle() : 0.0f;
   current.voltage_limit = open_loop_ ? open_loop_voltage_limit_ : motor_.voltage_limit;
   current.velocity_p = velocity_p_;

@@ -24,6 +24,7 @@ class DriveMotorController {
     uint8_t pwm_channel_b;
     uint8_t pwm_channel_c;
     float velocity_direction;
+    float feedback_direction;
   };
 
   struct Status {

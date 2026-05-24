@@ -16,6 +16,7 @@ drive::DriveMotorController g_controller({
     .pwm_channel_b = 1,
     .pwm_channel_c = 2,
     .velocity_direction = -1.0f,
+    .feedback_direction = -1.0f,
 });
 
 }  // namespace
