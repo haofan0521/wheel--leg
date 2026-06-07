@@ -5,10 +5,10 @@
 
 namespace {
 
-constexpr float kDefaultVoltageLimit = 6.0f;
+constexpr float kDefaultVoltageLimit = 12.0f; // 增加默认电压限制 (原 6.0)
 constexpr float kMinVoltageLimit = 0.5f;
-constexpr float kMaxVoltageLimit = 8.0f;
-constexpr float kVelocityLimit = 20.0f;
+constexpr float kMaxVoltageLimit = 18.0f; // 增加最大电压限制 (原 8.0)
+constexpr float kVelocityLimit = 30.0f;   // 增加速度上限 (原 20.0)
 constexpr float kPowerSupplyVoltage = 22.7f;
 constexpr float kFocAlignVoltage = 6.0f;
 constexpr uint32_t kOpenLoopPwmFrequencyHz = 20000;
@@ -26,10 +26,10 @@ DriveMotorController::DriveMotorController(const Config& config)
       driver_(config.pwm_pins.phase_a, config.pwm_pins.phase_b, config.pwm_pins.phase_c, NOT_SET),
       target_velocity_(0.0f),
       open_loop_voltage_limit_(kDefaultVoltageLimit),
-      velocity_p_(0.2f),
-      velocity_i_(2.0f),
+      velocity_p_(0.5f),   // 增加速度环 P (原 0.2)
+      velocity_i_(5.0f),   // 增加速度环 I (原 2.0)
       velocity_d_(0.0f),
-      velocity_lpf_tf_(0.02f),
+      velocity_lpf_tf_(0.01f), // 减小滤波时间常数提升响应 (原 0.02)
       open_loop_electrical_angle_(0.0f),
       last_open_loop_update_us_(0),
       initialized_(false),

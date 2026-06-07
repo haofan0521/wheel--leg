@@ -172,23 +172,24 @@ bool solveIK(float x, float y, IK_Result *result) {
     result->alpha = alpha_rad * 180.0f / M_PI;
     result->beta = beta_rad * 180.0f / M_PI;
 
-    // --- 4. 舵机映射 (基于 90度 参考值) ---
-    // 映射公式: Value = Offset90 + (Angle - 90) * kDegToVal
+    // --- 4. 舵机映射 (基于用户提供的 90度 参考值与方向) ---
+    // 映射公式: Value = Offset90 + (Angle - 90) * Direction * kDegToVal
     constexpr float kDegToVal = 1000.0f / 240.0f;
 
-    // 1,2 号舵机 (第一侧): 发送值增大时角度减小 -> 反向映射
-    float v1 = 500.0f - (result->alpha - 90.0f) * kDegToVal;
-    float v2 = 500.0f - (result->beta - 90.0f) * kDegToVal;
-    
-    // 3,4 号舵机 (第二侧): 发送值增大时角度增大 -> 正向映射
-    float v3 = 500.0f + (result->alpha - 90.0f) * kDegToVal;
-    float v4 = 500.0f + (result->beta - 90.0f) * kDegToVal;
+    // ID1: 470, 数值减小时α角增大 (方向 -1)
+    float v1 = 470.0f - (result->alpha - 90.0f) * kDegToVal;
+    // ID2: 870, 数值增大时β角增大 (方向 +1)
+    float v2 = 870.0f + (result->beta - 90.0f) * kDegToVal;
+    // ID3: 660, 数值增大时α角增大 (方向 +1)
+    float v3 = 660.0f + (result->alpha - 90.0f) * kDegToVal;
+    // ID4: 160, 数值减小时β角增大 (方向 -1)
+    float v4 = 160.0f - (result->beta - 90.0f) * kDegToVal;
 
     // 限制范围在 0-1000 并赋值
-    result->servo_values[0] = (uint16_t)constrain(v1, 0, 1000);
-    result->servo_values[1] = (uint16_t)constrain(v2, 0, 1000);
-    result->servo_values[2] = (uint16_t)constrain(v3, 0, 1000);
-    result->servo_values[3] = (uint16_t)constrain(v4, 0, 1000);
+    result->servo_values[0] = (uint16_t)constrain(v1, 0, 1000); // ID1
+    result->servo_values[1] = (uint16_t)constrain(v2, 0, 1000); // ID2
+    result->servo_values[2] = (uint16_t)constrain(v3, 0, 1000); // ID3
+    result->servo_values[3] = (uint16_t)constrain(v4, 0, 1000); // ID4
 
     return true;
 }
