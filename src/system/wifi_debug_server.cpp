@@ -171,6 +171,8 @@ String servoStatusJson() {
 
 uint32_t g_motor_command_sequence = 0;
 uint32_t g_balance_command_sequence = 0;
+constexpr float kDefaultLegTargetX = 2.0f;
+constexpr float kDefaultLegHeightCm = 20.0f;
 
 }  // namespace
 
@@ -338,15 +340,20 @@ void WiFiDebugServer::handleServoCommand() {
   }
 
   if (action == "set_height") {
-    const float height = server_.hasArg("h") ? clampFloat(server_.arg("h").toFloat(), 10.0f, 35.0f) : 20.0f;
+    const float height = server_.hasArg("h") ? clampFloat(server_.arg("h").toFloat(), 10.0f, 35.0f) : kDefaultLegHeightCm;
+    const float target_x = server_.hasArg("x") ? clampFloat(server_.arg("x").toFloat(), -5.0f, 10.0f) : kDefaultLegTargetX;
     auto command = runtime_state::servoCommand();
+    command.target_x = target_x;
     command.target_height = height;
     command.time_ms = time_ms;
     command.has_height = true;
     command.updated_ms = millis();
     command.sequence++;
     runtime_state::updateServoCommand(command);
-    server_.send(200, "application/json; charset=utf-8", "{\"ok\":true,\"height\":" + String(height) + ",\"time\":" + String(time_ms) + "}");
+    server_.send(200, "application/json; charset=utf-8",
+                 "{\"ok\":true,\"x\":" + String(target_x) +
+                 ",\"height\":" + String(height) +
+                 ",\"time\":" + String(time_ms) + "}");
     return;
   }
 
@@ -419,8 +426,6 @@ String WiFiDebugServer::buildDebugPage() const {
     .btn-stop { background: #f44336; width: 82%; }
     .input-grp { margin: 16px 0; }
     .status { margin-top: 14px; font-size: 14px; color: #666; text-align: left; line-height: 1.7; }
-    .motor-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; text-align: left; }
-    .motor-card { background: #f8fafc; border-radius: 8px; padding: 12px; font-size: 14px; line-height: 1.7; }
     .balance-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 12px; }
     .balance-grid label { display: block; text-align: left; font-size: 13px; color: #475569; }
     .balance-grid input { width: 100%; font-size: 16px; padding: 8px; margin-top: 4px; }
@@ -447,41 +452,25 @@ String WiFiDebugServer::buildDebugPage() const {
 <body>
   <div class="layout">
     <div class="card">
-      <h2>左右轮控制调试</h2>
-      <div class="input-grp">
-        <label>控制对象: </label>
-        <select id="side" style="font-size: 16px; padding: 6px;">
-          <option value="left">左轮</option>
-          <option value="right">右轮</option>
-          <option value="both">左右同时</option>
-        </select>
-      </div>
-      <div class="input-grp">
-        <button onclick="setMode('open')" style="background:#8b5cf6;">开环模式</button>
-        <button onclick="setMode('closed')" style="background:#0f766e;">闭环 FOC</button>
-      </div>
+      <h2>电机正反转测试</h2>
       <div class="input-grp">
         <label>目标速度 (rad/s): </label>
         <input type="number" id="speed" value="5.0" step="1.0" style="font-size: 18px; width: 80px; text-align: center;">
       </div>
       <button class="btn-fwd" onclick="setSpeed(document.getElementById('speed').value)">正转</button>
       <button class="btn-rev" onclick="setSpeed(-document.getElementById('speed').value)">反转</button>
-      <button class="btn-stop" onclick="emergencyStop()">急停</button>
+      <button class="btn-stop" onclick="stopMotors()">停止</button>
       <div class="status" id="uptime">连接中...</div>
-      <div class="motor-grid">
-        <div class="motor-card" id="leftMotorStatus">左轮状态: --</div>
-        <div class="motor-card" id="rightMotorStatus">右轮状态: --</div>
-      </div>
       <h3>IMU 平衡</h3>
       <div class="balance-grid">
         <label>目标 Pitch<input type="number" id="balanceTarget" value="0" step="0.5"></label>
-        <label>Kp<input type="number" id="balanceKp" value="0.6" step="0.1"></label>
+        <label>Kp<input type="number" id="balanceKp" value="2.0" step="0.1"></label>
         <label>Kd<input type="number" id="balanceKd" value="0.03" step="0.01"></label>
         <label>Kv<input type="number" id="balanceKv" value="0.0" step="0.02"></label>
-        <label>输出方向<input type="number" id="balanceDir" value="1" step="2"></label>
-        <label>最大轮速<input type="number" id="balanceMaxV" value="4.0" step="0.5"></label>
+        <label>输出方向<input type="number" id="balanceDir" value="-1" step="2"></label>
+        <label>最大轮速<input type="number" id="balanceMaxV" value="10.0" step="0.5"></label>
         <label>启动角度<input type="number" id="balanceStartA" value="10.0" step="1.0"></label>
-        <label>保护角度<input type="number" id="balanceMaxA" value="25.0" step="1.0"></label>
+        <label>保护角度<input type="number" id="balanceMaxA" value="35.0" step="1.0"></label>
       </div>
       <button onclick="applyBalanceTuning()" style="background:#475569;">写入平衡参数</button>
       <button onclick="setBalance(1)" style="background:#0f766e;">开启平衡</button>
@@ -503,6 +492,7 @@ String WiFiDebugServer::buildDebugPage() const {
       <button onclick="readServoBattery()" style="background:#0369a1;">读取控制板电压</button>
       <h3>高度与简易解算</h3>
       <div class="balance-grid">
+        <label>中心位置 X (cm)<input type="number" id="legTargetX" value="2.0" step="0.5" min="-5" max="10"></label>
         <label>预设高度 (cm)<input type="number" id="legHeight" value="20" step="1" min="10" max="35"></label>
         <label>右腿中心<input type="number" id="legRightCenter" value="500" step="10" min="0" max="1000"></label>
         <label>左腿中心<input type="number" id="legLeftCenter" value="500" step="10" min="0" max="1000"></label>
@@ -533,10 +523,8 @@ String WiFiDebugServer::buildDebugPage() const {
     const rollSign = 1;
     const yawSign = 1;
     let attitudeInFlight = false;
-    function selectedSide() { return document.getElementById('side').value; }
-    async function setMode(mode) { await fetch('/api/motor?side=' + selectedSide() + '&mode=' + encodeURIComponent(mode), { method: 'POST' }); updateStatus(); }
-    async function setSpeed(v) { await fetch('/api/motor?side=' + selectedSide() + '&enable=1&v=' + encodeURIComponent(v), { method: 'POST' }); updateStatus(); }
-    async function emergencyStop() { await fetch('/api/motor?side=' + selectedSide() + '&stop=1', { method: 'POST' }); updateStatus(); }
+    async function setSpeed(v) { await fetch('/api/motor?side=both&enable=1&v=' + encodeURIComponent(v), { method: 'POST' }); updateStatus(); }
+    async function stopMotors() { await fetch('/api/motor?side=both&stop=1', { method: 'POST' }); updateStatus(); }
     async function applyBalanceTuning() {
       const params = new URLSearchParams({
         target: document.getElementById('balanceTarget').value,
@@ -590,19 +578,11 @@ String WiFiDebugServer::buildDebugPage() const {
       updateStatus();
     }
     async function applyHeight() {
+      const x = document.getElementById('legTargetX').value;
       const h = document.getElementById('legHeight').value;
       const time = servoTime();
-      await fetch(`/api/servo?action=set_height&h=${h}&time=${time}`, { method: 'POST' });
+      await fetch(`/api/servo?action=set_height&x=${x}&h=${h}&time=${time}`, { method: 'POST' });
       updateStatus();
-    }
-    function motorText(name, m) {
-      if (!m) return name + ': --';
-      return name + '<br>' +
-        '模式: ' + (m.openLoop ? '开环' : '闭环') +
-        ' | FOC: ' + (m.focReady ? '就绪' : '未就绪') + '<br>' +
-        '使能: ' + (m.enabled ? '是' : '否') + '<br>' +
-        '目标速度: ' + Number(m.targetVelocity).toFixed(2) + ' rad/s<br>' +
-        '实际速度: ' + Number(m.measuredVelocity).toFixed(2) + ' rad/s';
     }
     function balanceText(b) {
       if (!b) return '平衡状态: --';
@@ -642,8 +622,6 @@ String WiFiDebugServer::buildDebugPage() const {
         const res = await fetch('/api/status', { cache: 'no-store' });
         const data = await res.json();
         document.getElementById('uptime').innerText = '通信状态: 正常 | 运行: ' + data.uptime + ' | WiFi: ' + data.wifiMode + ' ' + data.ip;
-        document.getElementById('leftMotorStatus').innerHTML = motorText('左轮', data.leftMotor);
-        document.getElementById('rightMotorStatus').innerHTML = motorText('右轮', data.rightMotor);
         document.getElementById('balanceStatus').innerHTML = balanceText(data.balance);
         updateServoStatus(data.servo);
       } catch (e) {

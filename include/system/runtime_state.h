@@ -114,6 +114,7 @@ struct ImuSnapshot {
 
 struct ServoCommand {
   bool has_height;
+  float target_x;
   float target_height;
   uint16_t time_ms;
   uint32_t updated_ms;

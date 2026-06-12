@@ -5,21 +5,25 @@
 namespace {
 
 constexpr float kDefaultBalanceTargetPitchDeg = 0.0f;
-constexpr float kDefaultBalanceKp = 0.6f;
+constexpr float kDefaultBalanceKp = 2.0f;
 constexpr float kDefaultBalanceKd = 0.03f;
 constexpr float kDefaultBalanceKv = 0.0f;
-constexpr float kDefaultBalanceOutputDirection = 1.0f;
-constexpr float kDefaultBalanceMaxVelocity = 4.0f;
+constexpr float kDefaultBalanceOutputDirection = -1.0f;
+constexpr float kDefaultBalanceMaxVelocity = 10.0f;
 constexpr float kDefaultBalanceStartAngleDeg = 10.0f;
-constexpr float kDefaultBalanceMaxAngleDeg = 25.0f;
+constexpr float kDefaultBalanceMaxAngleDeg = 35.0f;
+constexpr float kDefaultLegTargetX = 2.0f;
+constexpr float kDefaultLegHeightCm = 20.0f;
+constexpr uint16_t kDefaultLegMoveTimeMs = 500;
 
 runtime_state::SystemSnapshot g_system_snapshot = {};
 runtime_state::MotorCommand g_left_motor_command = {};
 runtime_state::MotorCommand g_right_motor_command = {};
 runtime_state::ServoCommand g_servo_command = {
     .has_height = false,
-    .target_height = 20.0f,
-    .time_ms = 500,
+    .target_x = kDefaultLegTargetX,
+    .target_height = kDefaultLegHeightCm,
+    .time_ms = kDefaultLegMoveTimeMs,
     .updated_ms = 0,
     .sequence = 0,
 };
@@ -52,8 +56,9 @@ void begin() {
   g_right_motor_command = {};
   g_servo_command = {
       .has_height = false,
-      .target_height = 20.0f,
-      .time_ms = 500,
+      .target_x = kDefaultLegTargetX,
+      .target_height = kDefaultLegHeightCm,
+      .time_ms = kDefaultLegMoveTimeMs,
       .updated_ms = 0,
       .sequence = 0,
   };

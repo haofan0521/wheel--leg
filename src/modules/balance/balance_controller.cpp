@@ -5,13 +5,13 @@
 namespace {
 
 constexpr float kDefaultTargetPitchDeg = 0.0f;
-constexpr float kDefaultKp = 1.2f;    // 增加 Kp (原 0.6)
+constexpr float kDefaultKp = 2.0f;
 constexpr float kDefaultKd = 0.08f;   // 增加 Kd (原 0.03)
 constexpr float kDefaultKv = 0.0f;
 constexpr float kDefaultOutputDirection = -1.0f;
-constexpr float kDefaultMaxVelocity = 15.0f; // 增加最大速度限制 (原 4.0)
+constexpr float kDefaultMaxVelocity = 10.0f;
 constexpr float kDefaultStartAngleDeg = 15.0f; // 放宽启动角度 (原 10.0)
-constexpr float kDefaultMaxAngleDeg = 45.0f;   // 放宽保护角度 (原 25.0)
+constexpr float kDefaultMaxAngleDeg = 35.0f;
 
 balance::Config g_config = {
     .target_pitch_deg = kDefaultTargetPitchDeg,
