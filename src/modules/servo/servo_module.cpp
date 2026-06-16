@@ -176,12 +176,12 @@ bool solveIK(float x, float y, IK_Result *result) {
     // 映射公式: Value = Offset90 + (Angle - 90) * Direction * kDegToVal
     constexpr float kDegToVal = 1000.0f / 240.0f;
 
-    // ID1: 470, 数值减小时α角增大 (方向 -1)
-    float v1 = 470.0f - (result->alpha - 90.0f) * kDegToVal;
-    // ID2: 870, 数值增大时β角增大 (方向 +1)
-    float v2 = 870.0f + (result->beta - 90.0f) * kDegToVal;
-    // ID3: 660, 数值增大时α角增大 (方向 +1)
-    float v3 = 660.0f + (result->alpha - 90.0f) * kDegToVal;
+    // ID1: 485, 数值减小时α角增大 (方向 -1)
+    float v1 = 485.0f - (result->alpha - 90.0f) * kDegToVal;
+    // ID2: 890, 数值增大时β角增大 (方向 +1)
+    float v2 = 890.0f + (result->beta - 90.0f) * kDegToVal;
+    // ID3: 640, 数值增大时α角增大 (方向 +1)
+    float v3 = 640.0f + (result->alpha - 90.0f) * kDegToVal;
     // ID4: 160, 数值减小时β角增大 (方向 -1)
     float v4 = 160.0f - (result->beta - 90.0f) * kDegToVal;
 
