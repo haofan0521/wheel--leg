@@ -1,6 +1,7 @@
 #include "system/wifi_debug_server.h"
 
 #include <Arduino.h>
+#include <Preferences.h>
 #include <WiFi.h>
 #include <cstring>
 
@@ -173,6 +174,49 @@ uint32_t g_motor_command_sequence = 0;
 uint32_t g_balance_command_sequence = 0;
 constexpr float kDefaultLegTargetX = 2.0f;
 constexpr float kDefaultLegHeightCm = 20.0f;
+constexpr char kBalancePrefsNamespace[] = "balance";
+constexpr char kBalancePrefsMagicKey[] = "magic";
+constexpr uint32_t kBalancePrefsMagic = 0xB14AACE1;
+
+bool loadSavedBalanceCommand(runtime_state::BalanceCommand& command) {
+  Preferences prefs;
+  if (!prefs.begin(kBalancePrefsNamespace, true)) return false;
+
+  const bool valid = prefs.getUInt(kBalancePrefsMagicKey, 0) == kBalancePrefsMagic;
+  if (valid) {
+    command.target_pitch_deg = clampFloat(prefs.getFloat("target", command.target_pitch_deg), -20.0f, 20.0f);
+    command.kp = clampFloat(prefs.getFloat("kp", command.kp), -20.0f, 20.0f);
+    command.kd = clampFloat(prefs.getFloat("kd", command.kd), -5.0f, 5.0f);
+    command.kv = clampFloat(prefs.getFloat("kv", command.kv), 0.0f, 5.0f);
+    command.output_direction = prefs.getFloat("dir", command.output_direction) >= 0.0f ? 1.0f : -1.0f;
+    command.max_velocity = clampFloat(prefs.getFloat("maxv", command.max_velocity), 0.2f, 20.0f);
+    command.start_angle_deg = clampFloat(prefs.getFloat("starta", command.start_angle_deg), 1.0f, 30.0f);
+    command.max_angle_deg = clampFloat(prefs.getFloat("maxa", command.max_angle_deg), 5.0f, 60.0f);
+    if (command.start_angle_deg > command.max_angle_deg) command.start_angle_deg = command.max_angle_deg;
+  }
+
+  prefs.end();
+  return valid;
+}
+
+bool saveBalanceCommand(const runtime_state::BalanceCommand& command) {
+  Preferences prefs;
+  if (!prefs.begin(kBalancePrefsNamespace, false)) return false;
+
+  bool ok = true;
+  ok = prefs.putFloat("target", command.target_pitch_deg) == sizeof(float) && ok;
+  ok = prefs.putFloat("kp", command.kp) == sizeof(float) && ok;
+  ok = prefs.putFloat("kd", command.kd) == sizeof(float) && ok;
+  ok = prefs.putFloat("kv", command.kv) == sizeof(float) && ok;
+  ok = prefs.putFloat("dir", command.output_direction) == sizeof(float) && ok;
+  ok = prefs.putFloat("maxv", command.max_velocity) == sizeof(float) && ok;
+  ok = prefs.putFloat("starta", command.start_angle_deg) == sizeof(float) && ok;
+  ok = prefs.putFloat("maxa", command.max_angle_deg) == sizeof(float) && ok;
+  ok = prefs.putUInt(kBalancePrefsMagicKey, kBalancePrefsMagic) == sizeof(uint32_t) && ok;
+
+  prefs.end();
+  return ok;
+}
 
 }  // namespace
 
@@ -187,6 +231,7 @@ void WiFiDebugServer::begin() {
   if (started_) return;
   WiFi.persistent(false);
   WiFi.setAutoReconnect(true);
+  loadSavedBalanceConfig();
   configureRoutes();
   stationConnected_ = connectToStation();
   if (!stationConnected_) startFallbackAccessPoint();
@@ -290,7 +335,7 @@ void WiFiDebugServer::handleBalanceCommand() {
   if (server_.hasArg("target") || server_.hasArg("kp") || server_.hasArg("kd") ||
       server_.hasArg("kv") ||
       server_.hasArg("dir") || server_.hasArg("maxv") || server_.hasArg("starta") ||
-      server_.hasArg("maxa")) {
+      server_.hasArg("maxa") || server_.hasArg("save")) {
     const auto state = runtime_state::snapshot();
     const auto& balance = state.control.balance;
     const bool has_live_config = balance.max_velocity > 0.0f && balance.max_angle_deg > 0.0f;
@@ -314,10 +359,18 @@ void WiFiDebugServer::handleBalanceCommand() {
     command.has_tuning = true;
   }
 
+  const bool save_requested = server_.hasArg("save") && server_.arg("save").toInt() != 0;
+  const bool saved = save_requested && saveBalanceCommand(command);
+
   command.updated_ms = millis();
   command.sequence = ++g_balance_command_sequence;
   runtime_state::updateBalanceCommand(command);
-  server_.send(200, "application/json; charset=utf-8", "{\"ok\":true}");
+  if (save_requested && !saved) {
+    server_.send(500, "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"save failed\"}");
+    return;
+  }
+  server_.send(200, "application/json; charset=utf-8",
+               String("{\"ok\":true,\"saved\":") + (saved ? "true" : "false") + "}");
 }
 
 void WiFiDebugServer::handleServoCommand() {
@@ -426,6 +479,11 @@ String WiFiDebugServer::buildDebugPage() const {
     .btn-stop { background: #f44336; width: 82%; }
     .input-grp { margin: 16px 0; }
     .status { margin-top: 14px; font-size: 14px; color: #666; text-align: left; line-height: 1.7; }
+    .tuning-notes { margin-top: 14px; padding: 12px 14px; border-left: 4px solid #0369a1; background: #f8fafc; text-align: left; font-size: 13px; line-height: 1.65; color: #334155; }
+    .tuning-notes h4 { margin: 0 0 6px; font-size: 15px; color: #0f172a; }
+    .tuning-notes ol { margin: 0; padding-left: 18px; }
+    .tuning-notes li { margin: 3px 0; }
+    .tuning-notes strong { color: #b91c1c; }
     .balance-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 12px; }
     .balance-grid label { display: block; text-align: left; font-size: 13px; color: #475569; }
     .balance-grid input { width: 100%; font-size: 16px; padding: 8px; margin-top: 4px; }
@@ -463,18 +521,31 @@ String WiFiDebugServer::buildDebugPage() const {
       <div class="status" id="uptime">连接中...</div>
       <h3>IMU 平衡</h3>
       <div class="balance-grid">
-        <label>目标 Pitch<input type="number" id="balanceTarget" value="0" step="0.5"></label>
-        <label>Kp<input type="number" id="balanceKp" value="2.0" step="0.1"></label>
-        <label>Kd<input type="number" id="balanceKd" value="0.03" step="0.01"></label>
-        <label>Kv<input type="number" id="balanceKv" value="0.0" step="0.02"></label>
+        <label>目标 Pitch<input type="number" id="balanceTarget" value="0.795" step="0.1"></label>
+        <label>Kp<input type="number" id="balanceKp" value="1.69" step="0.05"></label>
+        <label>Kd<input type="number" id="balanceKd" value="0.028" step="0.005"></label>
+        <label>Kv<input type="number" id="balanceKv" value="0.5" step="0.02"></label>
         <label>输出方向<input type="number" id="balanceDir" value="-1" step="2"></label>
         <label>最大轮速<input type="number" id="balanceMaxV" value="10.0" step="0.5"></label>
         <label>启动角度<input type="number" id="balanceStartA" value="10.0" step="1.0"></label>
         <label>保护角度<input type="number" id="balanceMaxA" value="35.0" step="1.0"></label>
       </div>
       <button onclick="applyBalanceTuning()" style="background:#475569;">写入平衡参数</button>
+      <button onclick="saveBalanceTuning()" style="background:#0369a1;">保存平衡参数</button>
       <button onclick="setBalance(1)" style="background:#0f766e;">开启平衡</button>
       <button onclick="setBalance(0)" style="background:#f44336;">关闭平衡</button>
+      <div class="status" id="balanceSaveStatus">参数保存: --</div>
+      <div class="tuning-notes">
+        <h4>调车注意事项</h4>
+        <ol>
+          <li>先把最大轮速限制在 5~6 rad/s，车轮离地确认输出方向；方向错时不要继续加 Kp/Kd。</li>
+          <li>一次只改一个参数：先调 Kp，再加少量 Kd 抑制摆动，最后用 Kv 抑制轮速越跑越大。</li>
+          <li>如果刚能站住但随后来回晃动并冲出去，先降 Kp 或 Kd，把 Kv 从 0.03~0.05 小步加起。</li>
+          <li>如果车一直往同一方向慢跑，优先每次 0.3~0.5 度微调目标 Pitch，再考虑加 Kv。</li>
+          <li>状态里的轮速必须与车体前后移动方向一致；轮速方向不对时，Kv 可能变成反阻尼。</li>
+          <li><strong>确认一组参数稳定后再保存</strong>，保存后掉电重启会自动恢复调参值，但不会自动开启平衡。</li>
+        </ol>
+      </div>
       <div class="status" id="balanceStatus">平衡状态: --</div>
       <h3>幻尔总线舵机</h3>
       <div class="input-grp">
@@ -523,6 +594,7 @@ String WiFiDebugServer::buildDebugPage() const {
     const rollSign = 1;
     const yawSign = 1;
     let attitudeInFlight = false;
+    let balanceInputsSynced = false;
     async function setSpeed(v) { await fetch('/api/motor?side=both&enable=1&v=' + encodeURIComponent(v), { method: 'POST' }); updateStatus(); }
     async function stopMotors() { await fetch('/api/motor?side=both&stop=1', { method: 'POST' }); updateStatus(); }
     async function applyBalanceTuning() {
@@ -537,6 +609,22 @@ String WiFiDebugServer::buildDebugPage() const {
         maxa: document.getElementById('balanceMaxA').value
       });
       await fetch('/api/balance?' + params.toString(), { method: 'POST' });
+      updateStatus();
+    }
+    async function saveBalanceTuning() {
+      const params = new URLSearchParams({
+        target: document.getElementById('balanceTarget').value,
+        kp: document.getElementById('balanceKp').value,
+        kd: document.getElementById('balanceKd').value,
+        kv: document.getElementById('balanceKv').value,
+        dir: document.getElementById('balanceDir').value,
+        maxv: document.getElementById('balanceMaxV').value,
+        starta: document.getElementById('balanceStartA').value,
+        maxa: document.getElementById('balanceMaxA').value,
+        save: '1'
+      });
+      const res = await fetch('/api/balance?' + params.toString(), { method: 'POST' });
+      document.getElementById('balanceSaveStatus').innerText = res.ok ? '参数保存: 已保存，重启后自动恢复' : '参数保存: 失败';
       updateStatus();
     }
     async function setBalance(enable) {
@@ -596,6 +684,19 @@ String WiFiDebugServer::buildDebugPage() const {
         '启动/保护角: ' + Number(b.startAngle).toFixed(1) + '° / ' + Number(b.maxAngle).toFixed(1) + '°' +
         ' | 保护: ' + (b.fault ? '触发' : '正常');
     }
+    function syncBalanceInputs(b) {
+      if (!b || balanceInputsSynced) return;
+      if (!(Number(b.maxVelocity) > 0 && Number(b.maxAngle) > 0)) return;
+      document.getElementById('balanceTarget').value = Number(b.targetPitch).toFixed(2);
+      document.getElementById('balanceKp').value = Number(b.kp).toFixed(3);
+      document.getElementById('balanceKd').value = Number(b.kd).toFixed(3);
+      document.getElementById('balanceKv').value = Number(b.kv).toFixed(3);
+      document.getElementById('balanceDir').value = Number(b.direction).toFixed(0);
+      document.getElementById('balanceMaxV').value = Number(b.maxVelocity).toFixed(2);
+      document.getElementById('balanceStartA').value = Number(b.startAngle).toFixed(1);
+      document.getElementById('balanceMaxA').value = Number(b.maxAngle).toFixed(1);
+      balanceInputsSynced = true;
+    }
     function updateServoStatus(s) {
       if (!s) {
         document.getElementById('servoStatus').innerText = '舵机状态: --';
@@ -623,6 +724,7 @@ String WiFiDebugServer::buildDebugPage() const {
         const data = await res.json();
         document.getElementById('uptime').innerText = '通信状态: 正常 | 运行: ' + data.uptime + ' | WiFi: ' + data.wifiMode + ' ' + data.ip;
         document.getElementById('balanceStatus').innerHTML = balanceText(data.balance);
+        syncBalanceInputs(data.balance);
         updateServoStatus(data.servo);
       } catch (e) {
         document.getElementById('uptime').innerText = '通信状态: 断开';
@@ -697,4 +799,17 @@ String WiFiDebugServer::currentModeLabel() const {
 
 String WiFiDebugServer::currentIpString() const {
   return stationConnected_ ? WiFi.localIP().toString() : WiFi.softAPIP().toString();
+}
+
+void WiFiDebugServer::loadSavedBalanceConfig() {
+  auto command = runtime_state::balanceCommand();
+  if (!loadSavedBalanceCommand(command)) return;
+
+  command.stop = false;
+  command.enable = false;
+  command.has_enable = false;
+  command.has_tuning = true;
+  command.updated_ms = millis();
+  command.sequence = ++g_balance_command_sequence;
+  runtime_state::updateBalanceCommand(command);
 }

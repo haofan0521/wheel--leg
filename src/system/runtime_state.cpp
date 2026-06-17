@@ -4,10 +4,10 @@
 
 namespace {
 
-constexpr float kDefaultBalanceTargetPitchDeg = 0.0f;
-constexpr float kDefaultBalanceKp = 2.0f;
-constexpr float kDefaultBalanceKd = 0.03f;
-constexpr float kDefaultBalanceKv = 0.0f;
+constexpr float kDefaultBalanceTargetPitchDeg = 0.795f;
+constexpr float kDefaultBalanceKp = 1.69f;
+constexpr float kDefaultBalanceKd = 0.028f;
+constexpr float kDefaultBalanceKv = 0.5f;
 constexpr float kDefaultBalanceOutputDirection = -1.0f;
 constexpr float kDefaultBalanceMaxVelocity = 10.0f;
 constexpr float kDefaultBalanceStartAngleDeg = 10.0f;

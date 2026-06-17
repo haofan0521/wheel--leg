@@ -44,6 +44,9 @@ class WiFiDebugServer {
   // 处理 IMU 平衡控制指令。
   void handleBalanceCommand();
 
+  // 从 NVS 恢复上次保存的平衡参数，只恢复调参值，不自动开启平衡。
+  void loadSavedBalanceConfig();
+
   // 处理总线舵机调试指令。
   void handleServoCommand();
 

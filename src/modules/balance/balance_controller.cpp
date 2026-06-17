@@ -4,10 +4,10 @@
 
 namespace {
 
-constexpr float kDefaultTargetPitchDeg = 0.0f;
-constexpr float kDefaultKp = 2.0f;
-constexpr float kDefaultKd = 0.08f;   // 增加 Kd (原 0.03)
-constexpr float kDefaultKv = 0.0f;
+constexpr float kDefaultTargetPitchDeg = 0.795f;
+constexpr float kDefaultKp = 1.69f;
+constexpr float kDefaultKd = 0.028f;
+constexpr float kDefaultKv = 0.5f;
 constexpr float kDefaultOutputDirection = -1.0f;
 constexpr float kDefaultMaxVelocity = 10.0f;
 constexpr float kDefaultStartAngleDeg = 15.0f; // 放宽启动角度 (原 10.0)
