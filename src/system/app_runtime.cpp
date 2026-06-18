@@ -24,13 +24,15 @@ TaskHandle_t g_service_task_handle = nullptr;
 bool g_runtime_started = false;
 constexpr uint32_t kMotorCommandTimeoutMs = 10000;
 constexpr float kLeftForwardVelocitySign = 1.0f;
-constexpr float kRightForwardVelocitySign = 1.0f;
+// 仅用于把编码器读数映射为车体前进方向轮速，不改变电机实际输出方向。
+constexpr float kRightForwardVelocitySign = -1.0f;
 constexpr float kDefaultLegTargetX = -3.5f;
 constexpr float kDefaultLegHeightCm = 20.0f;
 constexpr uint16_t kDefaultLegMoveTimeMs = 1000;
 uint32_t g_last_left_motor_command_sequence = 0;
 uint32_t g_last_right_motor_command_sequence = 0;
 bool g_balance_drive_prepared = false;
+bool g_balance_telemetry_header_printed = false;
 
 using SetOpenLoopFn = void (*)(bool);
 using SetEnabledFn = void (*)(bool);
@@ -211,6 +213,47 @@ void fillBalanceSnapshot(runtime_state::BalanceSnapshot& snapshot,
   snapshot.last_update_ms = now_ms;
 }
 
+void emitBalanceTelemetryCsv(const uint32_t loop_counter,
+                             const uint32_t now_ms,
+                             const balance::Output& balance_output,
+                             const drive::DriveMotorController::Status& left_motor_status,
+                             const drive::DriveMotorController::Status& right_motor_status) {
+  if (!app_runtime_config::kEnableVofaTelemetry) return;
+  if (app_runtime_config::kVofaTelemetryDecimation == 0) return;
+  if (loop_counter % app_runtime_config::kVofaTelemetryDecimation != 0) return;
+
+  if (!g_balance_telemetry_header_printed) {
+    Serial.println("time_ms,loop_counter,pitch_deg,target_pitch_deg,pitch_rate_dps,wheel_velocity,output_velocity,balance_enabled,balance_active,balance_fault,kp,kd,kv,direction,max_velocity,left_target_velocity,left_measured_velocity,right_target_velocity,right_measured_velocity,left_forward_velocity,right_forward_velocity");
+    g_balance_telemetry_header_printed = true;
+  }
+
+  const float left_forward_velocity = left_motor_status.measured_velocity * kLeftForwardVelocitySign;
+  const float right_forward_velocity = right_motor_status.measured_velocity * kRightForwardVelocitySign;
+
+  Serial.printf("%lu,%lu,%.4f,%.4f,%.4f,%.4f,%.4f,%u,%u,%u,%.5f,%.5f,%.5f,%.1f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n",
+                static_cast<unsigned long>(now_ms),
+                static_cast<unsigned long>(loop_counter),
+                balance_output.pitch_deg,
+                balance_output.target_pitch_deg,
+                balance_output.pitch_rate_dps,
+                balance_output.wheel_velocity,
+                balance_output.output_velocity,
+                balance_output.enabled ? 1U : 0U,
+                balance_output.active ? 1U : 0U,
+                balance_output.fault ? 1U : 0U,
+                balance_output.kp,
+                balance_output.kd,
+                balance_output.kv,
+                balance_output.output_direction,
+                balance_output.max_velocity,
+                left_motor_status.target_velocity,
+                left_motor_status.measured_velocity,
+                right_motor_status.target_velocity,
+                right_motor_status.measured_velocity,
+                left_forward_velocity,
+                right_forward_velocity);
+}
+
 void controlTaskEntry(void* /*context*/) {
   drive::begin();
   encoder::begin();
@@ -309,6 +352,11 @@ void controlTaskEntry(void* /*context*/) {
     fillMotorSnapshot(snapshot.left_motor, left_motor_status, left_command);
     fillMotorSnapshot(snapshot.right_motor, right_motor_status, right_command);
     runtime_state::updateControlSnapshot(snapshot);
+    emitBalanceTelemetryCsv(control_loop_counter,
+                            now_ms,
+                            balance_output,
+                            left_motor_status,
+                            right_motor_status);
 
     vTaskDelayUntil(&last_wake_tick,
                     pdMS_TO_TICKS(app_runtime_config::kControlTaskPeriodMs));

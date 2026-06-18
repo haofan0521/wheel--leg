@@ -24,7 +24,9 @@ constexpr uint32_t kServiceTaskStackBytes = 8192;
 constexpr uint32_t kControlTaskPeriodMs = 1;
 constexpr uint32_t kServiceTaskPeriodMs = 2;
 
-constexpr bool kEnableVofaTelemetry = false;
+// 串口 CSV 遥测用于 MATLAB/LQR 离线辨识。
+// 控制周期为 1ms，decimation=10 时输出约 100Hz。
+constexpr bool kEnableVofaTelemetry = true;
 constexpr uint32_t kVofaTelemetryDecimation = 10;
 
 }  // namespace app_runtime_config

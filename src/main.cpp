@@ -6,7 +6,7 @@
 #include "system/app_runtime.h"
 
 namespace {
-constexpr uint32_t kSerialBaudRate = 115200;
+constexpr uint32_t kSerialBaudRate = 921600;
 }  // namespace
 
 void setup() {
