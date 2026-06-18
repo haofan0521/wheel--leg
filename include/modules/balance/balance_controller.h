@@ -13,6 +13,8 @@ struct Config {
   float max_velocity;
   float start_angle_deg;
   float max_angle_deg;
+  float remote_velocity;
+  float remote_turn_velocity;
 };
 
 struct Input {
@@ -38,6 +40,8 @@ struct Output {
   float max_velocity;
   float start_angle_deg;
   float max_angle_deg;
+  float remote_velocity;
+  float remote_turn_velocity;
 };
 
 void begin();

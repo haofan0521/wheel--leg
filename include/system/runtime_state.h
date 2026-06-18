@@ -51,6 +51,8 @@ struct BalanceCommand {
   bool stop;
   bool has_enable;
   bool has_tuning;
+  bool has_remote_velocity;
+  bool has_remote_turn_velocity;
   float target_pitch_deg;
   float kp;
   float kd;
@@ -59,6 +61,9 @@ struct BalanceCommand {
   float max_velocity;
   float start_angle_deg;
   float max_angle_deg;
+  float remote_velocity;
+  float remote_turn_velocity;
+  uint32_t remote_sequence;
   uint32_t updated_ms;
   uint32_t sequence;
 };
@@ -79,6 +84,8 @@ struct BalanceSnapshot {
   float max_velocity;
   float start_angle_deg;
   float max_angle_deg;
+  float remote_velocity;
+  float remote_turn_velocity;
   uint32_t last_update_ms;
 };
 

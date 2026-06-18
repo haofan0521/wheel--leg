@@ -23,6 +23,10 @@ TaskHandle_t g_control_task_handle = nullptr;
 TaskHandle_t g_service_task_handle = nullptr;
 bool g_runtime_started = false;
 constexpr uint32_t kMotorCommandTimeoutMs = 10000;
+constexpr uint32_t kRemoteVelocityTimeoutMs = 200;
+constexpr float kRemoteVelocityAccelLimit = 20.0f;     // rad/s^2，前后遥控快速响应。
+constexpr float kRemoteTurnAccelLimit = 24.0f;         // rad/s^2，转向差速快速响应。
+constexpr float kRemoteStopAccelLimit = 30.0f;         // rad/s^2，松手/超时后快速回零。
 constexpr float kLeftForwardVelocitySign = 1.0f;
 // 仅用于把编码器读数映射为车体前进方向轮速，不改变电机实际输出方向。
 constexpr float kRightForwardVelocitySign = -1.0f;
@@ -33,6 +37,12 @@ uint32_t g_last_left_motor_command_sequence = 0;
 uint32_t g_last_right_motor_command_sequence = 0;
 bool g_balance_drive_prepared = false;
 bool g_balance_telemetry_header_printed = false;
+bool g_remote_velocity_active = false;
+uint32_t g_last_remote_velocity_ms = 0;
+uint32_t g_last_remote_ramp_ms = 0;
+uint32_t g_last_remote_command_sequence = 0;
+float g_remote_velocity_target = 0.0f;
+float g_remote_turn_velocity_target = 0.0f;
 
 using SetOpenLoopFn = void (*)(bool);
 using SetEnabledFn = void (*)(bool);
@@ -40,6 +50,12 @@ using SetTargetVelocityFn = void (*)(float);
 using EmergencyStopFn = void (*)();
 using SetVoltageLimitFn = void (*)(float);
 using SetVelocityPidFn = void (*)(float, float, float, float);
+
+float approachValue(const float current, const float target, const float max_delta) {
+  if (target > current + max_delta) return current + max_delta;
+  if (target < current - max_delta) return current - max_delta;
+  return target;
+}
 
 void applyMotorCommand(const runtime_state::MotorCommand& command,
                        uint32_t& last_sequence,
@@ -125,11 +141,35 @@ void applyBalanceCommand() {
     config.max_velocity = command.max_velocity;
     config.start_angle_deg = command.start_angle_deg;
     config.max_angle_deg = command.max_angle_deg;
+    config.remote_velocity = command.remote_velocity;
+    config.remote_turn_velocity = command.remote_turn_velocity;
     balance::setConfig(config);
   }
 
+  if (command.has_remote_velocity || command.has_remote_turn_velocity) {
+    if (command.remote_sequence != 0 &&
+        command.remote_sequence < g_last_remote_command_sequence) {
+      return;
+    }
+    if (command.remote_sequence != 0) {
+      g_last_remote_command_sequence = command.remote_sequence;
+    }
+    if (command.has_remote_velocity) g_remote_velocity_target = command.remote_velocity;
+    if (command.has_remote_turn_velocity) g_remote_turn_velocity_target = command.remote_turn_velocity;
+    g_remote_velocity_active = fabsf(g_remote_velocity_target) > 0.001f ||
+                               fabsf(g_remote_turn_velocity_target) > 0.001f;
+    g_last_remote_velocity_ms = millis();
+  }
+
   if (command.stop) {
+    g_remote_velocity_target = 0.0f;
+    g_remote_turn_velocity_target = 0.0f;
+    g_remote_velocity_active = false;
     balance::setEnabled(false);
+    balance::Config config = balance::config();
+    config.remote_velocity = 0.0f;
+    config.remote_turn_velocity = 0.0f;
+    balance::setConfig(config);
     g_balance_drive_prepared = false;
     drive::left_motor_test::emergencyStop();
     drive::right_motor_test::emergencyStop();
@@ -139,6 +179,13 @@ void applyBalanceCommand() {
   if (command.has_enable) {
     balance::setEnabled(command.enable);
     if (!command.enable) {
+      g_remote_velocity_target = 0.0f;
+      g_remote_turn_velocity_target = 0.0f;
+      g_remote_velocity_active = false;
+      balance::Config config = balance::config();
+      config.remote_velocity = 0.0f;
+      config.remote_turn_velocity = 0.0f;
+      balance::setConfig(config);
       g_balance_drive_prepared = false;
       drive::left_motor_test::emergencyStop();
       drive::right_motor_test::emergencyStop();
@@ -210,7 +257,42 @@ void fillBalanceSnapshot(runtime_state::BalanceSnapshot& snapshot,
   snapshot.max_velocity = output.max_velocity;
   snapshot.start_angle_deg = output.start_angle_deg;
   snapshot.max_angle_deg = output.max_angle_deg;
+  snapshot.remote_velocity = output.remote_velocity;
+  snapshot.remote_turn_velocity = output.remote_turn_velocity;
   snapshot.last_update_ms = now_ms;
+}
+
+void expireRemoteVelocity(const uint32_t now_ms) {
+  if (!g_remote_velocity_active) return;
+  if (now_ms - g_last_remote_velocity_ms <= kRemoteVelocityTimeoutMs) return;
+
+  g_remote_velocity_target = 0.0f;
+  g_remote_turn_velocity_target = 0.0f;
+  g_remote_velocity_active = false;
+}
+
+void updateRemoteVelocityRamp(const uint32_t now_ms) {
+  if (g_last_remote_ramp_ms == 0) {
+    g_last_remote_ramp_ms = now_ms;
+  }
+
+  const float dt = constrain((now_ms - g_last_remote_ramp_ms) * 0.001f, 0.0f, 0.05f);
+  g_last_remote_ramp_ms = now_ms;
+
+  balance::Config config = balance::config();
+  const float velocity_limit = fabsf(g_remote_velocity_target) < 0.001f ?
+                               kRemoteStopAccelLimit :
+                               kRemoteVelocityAccelLimit;
+  const float turn_limit = fabsf(g_remote_turn_velocity_target) < 0.001f ?
+                           kRemoteStopAccelLimit :
+                           kRemoteTurnAccelLimit;
+  config.remote_velocity = approachValue(config.remote_velocity,
+                                         g_remote_velocity_target,
+                                         velocity_limit * dt);
+  config.remote_turn_velocity = approachValue(config.remote_turn_velocity,
+                                              g_remote_turn_velocity_target,
+                                              turn_limit * dt);
+  balance::setConfig(config);
 }
 
 void emitBalanceTelemetryCsv(const uint32_t loop_counter,
@@ -223,14 +305,14 @@ void emitBalanceTelemetryCsv(const uint32_t loop_counter,
   if (loop_counter % app_runtime_config::kVofaTelemetryDecimation != 0) return;
 
   if (!g_balance_telemetry_header_printed) {
-    Serial.println("time_ms,loop_counter,pitch_deg,target_pitch_deg,pitch_rate_dps,wheel_velocity,output_velocity,balance_enabled,balance_active,balance_fault,kp,kd,kv,direction,max_velocity,left_target_velocity,left_measured_velocity,right_target_velocity,right_measured_velocity,left_forward_velocity,right_forward_velocity");
+    Serial.println("time_ms,loop_counter,pitch_deg,target_pitch_deg,pitch_rate_dps,wheel_velocity,output_velocity,remote_velocity,remote_turn_velocity,balance_enabled,balance_active,balance_fault,kp,kd,kv,direction,max_velocity,left_target_velocity,right_target_velocity,left_measured_velocity,right_measured_velocity,left_forward_velocity,right_forward_velocity");
     g_balance_telemetry_header_printed = true;
   }
 
   const float left_forward_velocity = left_motor_status.measured_velocity * kLeftForwardVelocitySign;
   const float right_forward_velocity = right_motor_status.measured_velocity * kRightForwardVelocitySign;
 
-  Serial.printf("%lu,%lu,%.4f,%.4f,%.4f,%.4f,%.4f,%u,%u,%u,%.5f,%.5f,%.5f,%.1f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n",
+  Serial.printf("%lu,%lu,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%u,%u,%u,%.5f,%.5f,%.5f,%.1f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n",
                 static_cast<unsigned long>(now_ms),
                 static_cast<unsigned long>(loop_counter),
                 balance_output.pitch_deg,
@@ -238,6 +320,8 @@ void emitBalanceTelemetryCsv(const uint32_t loop_counter,
                 balance_output.pitch_rate_dps,
                 balance_output.wheel_velocity,
                 balance_output.output_velocity,
+                balance_output.remote_velocity,
+                balance_output.remote_turn_velocity,
                 balance_output.enabled ? 1U : 0U,
                 balance_output.active ? 1U : 0U,
                 balance_output.fault ? 1U : 0U,
@@ -247,8 +331,8 @@ void emitBalanceTelemetryCsv(const uint32_t loop_counter,
                 balance_output.output_direction,
                 balance_output.max_velocity,
                 left_motor_status.target_velocity,
-                left_motor_status.measured_velocity,
                 right_motor_status.target_velocity,
+                left_motor_status.measured_velocity,
                 right_motor_status.measured_velocity,
                 left_forward_velocity,
                 right_forward_velocity);
@@ -297,6 +381,8 @@ void controlTaskEntry(void* /*context*/) {
     const uint32_t now_ms = millis();
     const auto attitude = imu::getAttitude();
     const auto imu_data = imu::getData();
+    expireRemoteVelocity(now_ms);
+    updateRemoteVelocityRamp(now_ms);
     const float pitch_rate_dps = imu_data.gyro_y * 180.0f / PI;
     const float left_forward_velocity = encoder::leftVelocity() * kLeftForwardVelocitySign;
     const float right_forward_velocity = encoder::rightVelocity() * kRightForwardVelocitySign;
@@ -325,8 +411,12 @@ void controlTaskEntry(void* /*context*/) {
         drive::right_motor_test::setEnabled(true);
         g_balance_drive_prepared = true;
       }
-      drive::left_motor_test::setTargetVelocity(balance_output.output_velocity);
-      drive::right_motor_test::setTargetVelocity(balance_output.output_velocity);
+      // 约定：remote_velocity 前进为正，remote_turn_velocity 右转为正。
+      // 前后速度进入平衡输出，转向速度只做左右轮差速混控；为保持现有平衡，直行时左右轮仍同目标。
+      const float left_target_velocity = balance_output.output_velocity + balance_output.remote_turn_velocity;
+      const float right_target_velocity = balance_output.output_velocity - balance_output.remote_turn_velocity;
+      drive::left_motor_test::setTargetVelocity(left_target_velocity);
+      drive::right_motor_test::setTargetVelocity(right_target_velocity);
     } else if (balance_output.fault) {
       g_balance_drive_prepared = false;
       drive::left_motor_test::emergencyStop();

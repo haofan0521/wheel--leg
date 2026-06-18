@@ -6,9 +6,9 @@ namespace wifi_debug_config {
 
 // 手机热点或调试 Wi-Fi 名称。   谁用就换谁的热点和密码
 //constexpr char kStaSsid[] = "SYY";
-constexpr char kStaSsid[] = "zmy";
+constexpr char kStaSsid[] = "yx";
 // 手机热点或调试 Wi-Fi 密码。
-constexpr char kStaPassword[] = "zmy060521";
+constexpr char kStaPassword[] = "20051030Yx";
 //constexpr char kStaPassword[] = "syy13509424959";
 // 设备在局域网中的主机名。
 constexpr char kHostname[] = "wheel-leg-debug";

@@ -12,6 +12,8 @@ constexpr float kDefaultOutputDirection = -1.0f;
 constexpr float kDefaultMaxVelocity = 10.0f;
 constexpr float kDefaultStartAngleDeg = 15.0f; // 放宽启动角度 (原 10.0)
 constexpr float kDefaultMaxAngleDeg = 35.0f;
+constexpr float kDefaultRemoteVelocity = 0.0f;
+constexpr float kDefaultRemoteTurnVelocity = 0.0f;
 
 balance::Config g_config = {
     .target_pitch_deg = kDefaultTargetPitchDeg,
@@ -22,6 +24,8 @@ balance::Config g_config = {
     .max_velocity = kDefaultMaxVelocity,
     .start_angle_deg = kDefaultStartAngleDeg,
     .max_angle_deg = kDefaultMaxAngleDeg,
+    .remote_velocity = kDefaultRemoteVelocity,
+    .remote_turn_velocity = kDefaultRemoteTurnVelocity,
 };
 balance::Output g_output = {};
 bool g_enabled = false;
@@ -44,6 +48,8 @@ void fillCommonOutput(const float pitch_deg, const float pitch_rate_dps, const f
   g_output.max_velocity = g_config.max_velocity;
   g_output.start_angle_deg = g_config.start_angle_deg;
   g_output.max_angle_deg = g_config.max_angle_deg;
+  g_output.remote_velocity = g_config.remote_velocity;
+  g_output.remote_turn_velocity = g_config.remote_turn_velocity;
 }
 
 }  // namespace
@@ -61,6 +67,8 @@ void begin() {
   g_output.max_velocity = g_config.max_velocity;
   g_output.start_angle_deg = g_config.start_angle_deg;
   g_output.max_angle_deg = g_config.max_angle_deg;
+  g_output.remote_velocity = g_config.remote_velocity;
+  g_output.remote_turn_velocity = g_config.remote_turn_velocity;
 }
 
 void setEnabled(const bool enabled) {
@@ -81,6 +89,12 @@ void setConfig(const Config& config) {
   g_config.max_velocity = constrain(config.max_velocity, 0.2f, 20.0f);
   g_config.max_angle_deg = constrain(config.max_angle_deg, 5.0f, 60.0f);
   g_config.start_angle_deg = constrain(config.start_angle_deg, 1.0f, g_config.max_angle_deg);
+  g_config.remote_velocity = constrain(config.remote_velocity,
+                                       -g_config.max_velocity,
+                                       g_config.max_velocity);
+  g_config.remote_turn_velocity = constrain(config.remote_turn_velocity,
+                                            -g_config.max_velocity,
+                                            g_config.max_velocity);
 }
 
 Config config() {
@@ -116,10 +130,11 @@ Output update(const Input& input) {
 
   g_output.active = true;
   g_output.fault = false;
-  g_output.output_velocity = clampAbs(g_config.output_direction *
-                                          (g_config.kp * pitch_error +
-                                           g_config.kd * input.pitch_rate_dps -
-                                           g_config.kv * input.wheel_velocity),
+  const float balance_velocity = g_config.output_direction *
+                                 (g_config.kp * pitch_error +
+                                  g_config.kd * input.pitch_rate_dps -
+                                  g_config.kv * input.wheel_velocity);
+  g_output.output_velocity = clampAbs(balance_velocity + g_config.remote_velocity,
                                       g_config.max_velocity);
   return g_output;
 }
