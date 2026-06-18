@@ -74,12 +74,13 @@ void applyRequestToCommand(WebServer& server, runtime_state::MotorCommand& comma
 }
 
 String motorSnapshotJson(const runtime_state::MotorSnapshot& motor) {
-  char buffer[768];
+  char buffer[896];
   snprintf(buffer, sizeof(buffer),
            "{\"initialized\":%s,\"focReady\":%s,\"enabled\":%s,\"openLoop\":%s,"
            "\"emergencyStopped\":%s,"
            "\"targetVelocity\":%.3f,\"measuredVelocity\":%.3f,\"angle\":%.3f,\"voltageLimit\":%.3f,"
            "\"velocityP\":%.4f,\"velocityI\":%.4f,\"velocityD\":%.4f,\"velocityTf\":%.4f,"
+           "\"velocityError\":%.4f,\"velocityPOutput\":%.4f,\"velocityIOutput\":%.4f,\"velocityPidOutput\":%.4f,"
            "\"voltageQ\":%.4f,\"voltageD\":%.4f,\"commandAgeMs\":%lu}",
            motor.initialized ? "true" : "false",
            motor.foc_ready ? "true" : "false",
@@ -94,6 +95,10 @@ String motorSnapshotJson(const runtime_state::MotorSnapshot& motor) {
            motor.velocity_i,
            motor.velocity_d,
            motor.velocity_lpf_tf,
+           motor.velocity_error,
+           motor.velocity_p_output,
+           motor.velocity_i_output,
+           motor.velocity_pid_output,
            motor.voltage_q,
            motor.voltage_d,
            (unsigned long)motor.command_age_ms);
@@ -110,7 +115,8 @@ String balanceSnapshotJson(const runtime_state::BalanceSnapshot& balance) {
            "\"useLqr\":%s,\"lqrPitch\":%.6f,\"lqrPitchRate\":%.6f,\"lqrWheelVelocity\":%.6f,"
            "\"lqrOutputSlewRate\":%.3f,"
            "\"direction\":%.1f,"
-           "\"maxVelocity\":%.3f,\"startAngle\":%.3f,\"maxAngle\":%.3f,\"lastUpdateMs\":%lu}",
+           "\"maxVelocity\":%.3f,\"startAngle\":%.3f,\"maxAngle\":%.3f,"
+           "\"remoteVelocity\":%.3f,\"remoteTurnVelocity\":%.3f,\"lastUpdateMs\":%lu}",
            balance.enabled ? "true" : "false",
            balance.active ? "true" : "false",
            balance.fault ? "true" : "false",
@@ -131,6 +137,8 @@ String balanceSnapshotJson(const runtime_state::BalanceSnapshot& balance) {
            balance.max_velocity,
            balance.start_angle_deg,
            balance.max_angle_deg,
+           balance.remote_velocity,
+           balance.remote_turn_velocity,
            (unsigned long)balance.last_update_ms);
   return String(buffer);
 }
@@ -500,6 +508,8 @@ void WiFiDebugServer::handleBalanceCommand() {
   command.stop = false;
   command.has_enable = false;
   command.has_tuning = false;
+  command.has_remote_velocity = false;
+  command.has_remote_turn_velocity = false;
 
   if (server_.hasArg("enable")) {
     command.enable = server_.arg("enable").toInt() != 0;
@@ -509,6 +519,21 @@ void WiFiDebugServer::handleBalanceCommand() {
     command.stop = true;
     command.enable = false;
     command.has_enable = true;
+    command.remote_velocity = 0.0f;
+    command.has_remote_velocity = true;
+    command.remote_turn_velocity = 0.0f;
+    command.has_remote_turn_velocity = true;
+  }
+  if (server_.hasArg("remotev")) {
+    command.remote_velocity = clampFloat(server_.arg("remotev").toFloat(), -20.0f, 20.0f);
+    command.has_remote_velocity = true;
+  }
+  if (server_.hasArg("turnv")) {
+    command.remote_turn_velocity = clampFloat(server_.arg("turnv").toFloat(), -20.0f, 20.0f);
+    command.has_remote_turn_velocity = true;
+  }
+  if (server_.hasArg("rseq")) {
+    command.remote_sequence = static_cast<uint32_t>(server_.arg("rseq").toInt());
   }
   if (server_.hasArg("target") || server_.hasArg("kp") || server_.hasArg("kd") ||
       server_.hasArg("kv") || server_.hasArg("lqr") || server_.hasArg("mode") ||
@@ -790,6 +815,13 @@ String WiFiDebugServer::buildDebugPage() const {
     .attitude-value { color: #0f172a; font-size: 18px; font-weight: bold; margin-top: 4px; }
     .fresh { color: #16a34a; }
     .stale { color: #dc2626; }
+    .joystick-wrap { display: flex; flex-direction: column; align-items: center; gap: 10px; margin: 14px 0 18px; }
+    .joystick { position: relative; width: 170px; height: 170px; border-radius: 50%; background: #eef2f7; border: 2px solid #cbd5e1; box-shadow: inset 0 2px 8px rgba(15,23,42,0.12); touch-action: none; user-select: none; }
+    .joystick::before, .joystick::after { content: ""; position: absolute; background: #cbd5e1; left: 50%; top: 50%; transform: translate(-50%, -50%); }
+    .joystick::before { width: 2px; height: 128px; }
+    .joystick::after { width: 128px; height: 2px; }
+    .joystick-knob { position: absolute; left: 50%; top: 50%; width: 64px; height: 64px; border-radius: 50%; background: #2563eb; transform: translate(-50%, -50%); box-shadow: 0 8px 18px rgba(37,99,235,0.35); touch-action: none; }
+    .joystick-value { min-height: 22px; font-size: 14px; color: #475569; }
   </style>
 </head>
 <body>
@@ -813,6 +845,20 @@ String WiFiDebugServer::buildDebugPage() const {
       <button onclick="stopTauTest()" style="background:#f44336;">停止 Tau 测试</button>
       <div class="status" id="tauStatus">Tau 测试: --</div>
       <h3>IMU 平衡</h3>
+      <div class="input-grp">
+        <label>前后速度 (rad/s): </label>
+        <input type="number" id="remoteSpeed" value="0.8" step="0.1" min="0" max="5" style="font-size: 18px; width: 90px; text-align: center;">
+      </div>
+      <div class="input-grp">
+        <label>转向速度 (rad/s): </label>
+        <input type="number" id="remoteTurnSpeed" value="0.5" step="0.1" min="0" max="5" style="font-size: 18px; width: 90px; text-align: center;">
+      </div>
+      <div class="joystick-wrap">
+        <div class="joystick" id="remoteJoystick">
+          <div class="joystick-knob" id="remoteJoystickKnob"></div>
+        </div>
+        <div class="joystick-value" id="remoteJoystickValue">前后: 0.00 | 转向: 0.00 rad/s</div>
+      </div>
       <div class="balance-grid">
         <label>控制模式<select id="balanceMode" style="width:100%; font-size:16px; padding:8px; margin-top:4px;"><option value="pid">PID/PD+Kv</option><option value="lqr">LQR</option></select></label>
         <label>目标 Pitch<input type="number" id="balanceTarget" value="0.795" step="0.1"></label>
@@ -893,8 +939,114 @@ String WiFiDebugServer::buildDebugPage() const {
     const yawSign = 1;
     let attitudeInFlight = false;
     let balanceInputsSynced = false;
+    let joystickActive = false;
+    let joystickVelocity = 0;
+    let joystickTurnVelocity = 0;
+    let remoteTimer = null;
+    let remoteInFlight = false;
+    let pendingRemote = null;
+    let remoteSequence = 0;
     async function setSpeed(v) { await fetch('/api/motor?side=both&enable=1&v=' + encodeURIComponent(v), { method: 'POST' }); updateStatus(); }
     async function stopMotors() { await fetch('/api/motor?side=both&stop=1', { method: 'POST' }); updateStatus(); }
+    async function flushRemoteVelocity() {
+      if (remoteInFlight || !pendingRemote) return;
+      const current = pendingRemote;
+      pendingRemote = null;
+      remoteInFlight = true;
+      const params = new URLSearchParams({
+        remotev: String(current.v),
+        turnv: String(current.turn),
+        rseq: String(current.sequence)
+      });
+      try {
+        await fetch('/api/balance?' + params.toString(), { method: 'POST' });
+      } finally {
+        remoteInFlight = false;
+        if (current.refresh) updateStatus();
+        if (pendingRemote) flushRemoteVelocity();
+      }
+    }
+    function setRemoteVelocity(v, turn, refresh = false) {
+      pendingRemote = { v, turn, refresh, sequence: ++remoteSequence };
+      flushRemoteVelocity();
+    }
+    async function sendRemoteStopNow(refresh = false) {
+      const sequence = ++remoteSequence;
+      const params = new URLSearchParams({
+        remotev: '0',
+        turnv: '0',
+        rseq: String(sequence)
+      });
+      try {
+        await fetch('/api/balance?' + params.toString(), { method: 'POST' });
+      } finally {
+        if (refresh) updateStatus();
+      }
+    }
+    function updateJoystickUi(x, y) {
+      const knob = document.getElementById('remoteJoystickKnob');
+      const label = document.getElementById('remoteJoystickValue');
+      const maxOffset = 53;
+      knob.style.transform = `translate(calc(-50% + ${x * maxOffset}px), calc(-50% + ${-y * maxOffset}px))`;
+      label.innerText = '前后: ' + joystickVelocity.toFixed(2) +
+        ' | 转向: ' + joystickTurnVelocity.toFixed(2) + ' rad/s';
+    }
+    function setJoystickVelocity(x, y) {
+      const maxSpeed = Math.abs(Number(document.getElementById('remoteSpeed').value || 0));
+      const maxTurnSpeed = Math.abs(Number(document.getElementById('remoteTurnSpeed').value || 0));
+      const deadband = 0.08;
+      const normalizedX = Math.abs(x) < deadband ? 0 : x;
+      const normalizedY = Math.abs(y) < deadband ? 0 : y;
+      joystickVelocity = normalizedY * maxSpeed;
+      joystickTurnVelocity = normalizedX * maxTurnSpeed;
+      updateJoystickUi(normalizedX, normalizedY);
+    }
+    function updateJoystickFromPointer(event) {
+      const joystick = document.getElementById('remoteJoystick');
+      const rect = joystick.getBoundingClientRect();
+      const center_x = rect.left + rect.width * 0.5;
+      const center_y = rect.top + rect.height * 0.5;
+      const radius = rect.width * 0.5;
+      let x = (event.clientX - center_x) / radius;
+      let y = (center_y - event.clientY) / radius;
+      const length = Math.hypot(x, y);
+      if (length > 1.0) {
+        x /= length;
+        y /= length;
+      }
+      setJoystickVelocity(x, y);
+    }
+    function stopRemoteVelocity(shouldUpdate = true) {
+      if (remoteTimer) clearInterval(remoteTimer);
+      remoteTimer = null;
+      joystickActive = false;
+      joystickVelocity = 0;
+      joystickTurnVelocity = 0;
+      updateJoystickUi(0, 0);
+      pendingRemote = null;
+      if (shouldUpdate) sendRemoteStopNow(true);
+    }
+    function bindRemoteJoystick() {
+      const joystick = document.getElementById('remoteJoystick');
+      joystick.addEventListener('pointerdown', (event) => {
+        event.preventDefault();
+        joystickActive = true;
+        joystick.setPointerCapture(event.pointerId);
+        updateJoystickFromPointer(event);
+        setRemoteVelocity(joystickVelocity, joystickTurnVelocity);
+        remoteTimer = setInterval(() => setRemoteVelocity(joystickVelocity, joystickTurnVelocity), 50);
+      });
+      joystick.addEventListener('pointermove', (event) => {
+        if (!joystickActive) return;
+        event.preventDefault();
+        updateJoystickFromPointer(event);
+        setRemoteVelocity(joystickVelocity, joystickTurnVelocity);
+      });
+      joystick.addEventListener('pointerup', () => stopRemoteVelocity());
+      joystick.addEventListener('pointercancel', () => stopRemoteVelocity());
+      joystick.addEventListener('lostpointercapture', () => stopRemoteVelocity());
+      window.addEventListener('blur', () => stopRemoteVelocity());
+    }
     async function startTauTest() {
       const params = new URLSearchParams({
         v: document.getElementById('tauVelocity').value,
@@ -992,11 +1144,20 @@ String WiFiDebugServer::buildDebugPage() const {
       await fetch(`/api/servo?action=set_height&x=${x}&h=${h}&time=${time}`, { method: 'POST' });
       updateStatus();
     }
-    function balanceText(b) {
+    function motorText(label, m) {
+      if (!m) return label + ': --';
+      return label + ': 目标 ' + Number(m.targetVelocity).toFixed(2) +
+        ' / 实测 ' + Number(m.measuredVelocity).toFixed(2) +
+        ' / 误差 ' + Number(m.velocityError || 0).toFixed(2);
+    }
+    function balanceText(b, leftMotor, rightMotor) {
       if (!b) return '平衡状态: --';
       return '平衡状态: ' + (b.enabled ? '已开启' : '关闭') +
         ' | 模式: ' + (b.useLqr ? 'LQR' : 'PID/PD+Kv') +
         ' | 输出: ' + Number(b.outputVelocity).toFixed(2) + ' rad/s<br>' +
+        '遥控: ' + Number(b.remoteVelocity || 0).toFixed(2) + ' / ' +
+        Number(b.remoteTurnVelocity || 0).toFixed(2) + ' rad/s' +
+        ' | 最大轮速: ' + Number(b.maxVelocity).toFixed(2) + ' rad/s<br>' +
         'Pitch: ' + Number(b.pitch).toFixed(2) + '°' +
         ' | Rate: ' + Number(b.pitchRate).toFixed(2) + ' °/s<br>' +
         '轮速: ' + Number(b.wheelVelocity).toFixed(2) + ' rad/s<br>' +
@@ -1007,7 +1168,9 @@ String WiFiDebugServer::buildDebugPage() const {
         ' | 爬坡: ' + Number(b.lqrOutputSlewRate).toFixed(1) +
         ' | Dir: ' + Number(b.direction).toFixed(0) + '<br>' +
         '启动/保护角: ' + Number(b.startAngle).toFixed(1) + '° / ' + Number(b.maxAngle).toFixed(1) + '°' +
-        ' | 保护: ' + (b.fault ? '触发' : '正常');
+        ' | 保护: ' + (b.fault ? '触发' : '正常') + '<br>' +
+        motorText('左轮', leftMotor) + '<br>' +
+        motorText('右轮', rightMotor);
     }
     function tauText(t) {
       if (!t) return 'Tau 测试: --';
@@ -1069,7 +1232,7 @@ String WiFiDebugServer::buildDebugPage() const {
         const res = await fetch('/api/status', { cache: 'no-store' });
         const data = await res.json();
         document.getElementById('uptime').innerText = '通信状态: 正常 | 运行: ' + data.uptime + ' | WiFi: ' + data.wifiMode + ' ' + data.ip;
-        document.getElementById('balanceStatus').innerHTML = balanceText(data.balance);
+        document.getElementById('balanceStatus').innerHTML = balanceText(data.balance, data.leftMotor, data.rightMotor);
         document.getElementById('tauStatus').innerHTML = tauText(data.tauTest);
         syncBalanceInputs(data.balance);
         updateServoStatus(data.servo);
@@ -1099,7 +1262,7 @@ String WiFiDebugServer::buildDebugPage() const {
         status.innerText = '姿态通信断开';
       } finally { attitudeInFlight = false; }
     }
-    updateStatus(); updateAttitude(); setInterval(updateStatus, 500); setInterval(updateAttitude, 100);
+    bindRemoteJoystick(); updateJoystickUi(0, 0); updateStatus(); updateAttitude(); setInterval(updateStatus, 500); setInterval(updateAttitude, 100);
   </script>
 </body>
 </html>

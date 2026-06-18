@@ -17,6 +17,8 @@ constexpr float kDefaultBalanceOutputDirection = -1.0f;
 constexpr float kDefaultBalanceMaxVelocity = 10.0f;
 constexpr float kDefaultBalanceStartAngleDeg = 10.0f;
 constexpr float kDefaultBalanceMaxAngleDeg = 35.0f;
+constexpr float kDefaultRemoteVelocity = 0.0f;
+constexpr float kDefaultRemoteTurnVelocity = 0.0f;
 constexpr float kDefaultLegTargetX = 2.0f;
 constexpr float kDefaultLegHeightCm = 20.0f;
 constexpr uint16_t kDefaultLegMoveTimeMs = 500;
@@ -37,6 +39,8 @@ runtime_state::BalanceCommand g_balance_command = {
     .stop = false,
     .has_enable = false,
     .has_tuning = false,
+    .has_remote_velocity = false,
+    .has_remote_turn_velocity = false,
     .target_pitch_deg = kDefaultBalanceTargetPitchDeg,
     .kp = kDefaultBalanceKp,
     .kd = kDefaultBalanceKd,
@@ -50,6 +54,9 @@ runtime_state::BalanceCommand g_balance_command = {
     .max_velocity = kDefaultBalanceMaxVelocity,
     .start_angle_deg = kDefaultBalanceStartAngleDeg,
     .max_angle_deg = kDefaultBalanceMaxAngleDeg,
+    .remote_velocity = kDefaultRemoteVelocity,
+    .remote_turn_velocity = kDefaultRemoteTurnVelocity,
+    .remote_sequence = 0,
     .updated_ms = 0,
     .sequence = 0,
 };
@@ -77,6 +84,8 @@ void begin() {
       .stop = false,
       .has_enable = false,
       .has_tuning = false,
+      .has_remote_velocity = false,
+      .has_remote_turn_velocity = false,
       .target_pitch_deg = kDefaultBalanceTargetPitchDeg,
       .kp = kDefaultBalanceKp,
       .kd = kDefaultBalanceKd,
@@ -90,6 +99,9 @@ void begin() {
       .max_velocity = kDefaultBalanceMaxVelocity,
       .start_angle_deg = kDefaultBalanceStartAngleDeg,
       .max_angle_deg = kDefaultBalanceMaxAngleDeg,
+      .remote_velocity = kDefaultRemoteVelocity,
+      .remote_turn_velocity = kDefaultRemoteTurnVelocity,
+      .remote_sequence = 0,
       .updated_ms = 0,
       .sequence = 0,
   };
