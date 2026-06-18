@@ -3,10 +3,10 @@
 #include <WebServer.h>
 
 // Wi-Fi 调试服务：
-// 1. 在服务核中运行，避免打断实时控制链路
-// 2. 优先以 STA 模式连接手机热点
-// 3. 连接失败后自动切换到 AP 模式
-// 4. 通过共享命令状态向控制任务提交调试指令，不直接操作电机驱动
+// 1. 在服务核中运行，避免打断实时控制链路。
+// 2. 优先以 STA 模式连接手机热点。
+// 3. 连接失败后自动切换到 AP 模式。
+// 4. 通过共享命令状态向控制任务提交调试命令，不直接操作电机驱动。
 class WiFiDebugServer {
  public:
   static WiFiDebugServer& instance();
@@ -16,6 +16,9 @@ class WiFiDebugServer {
 
   // 在服务任务中持续处理 HTTP 请求。
   void loop();
+
+  // 从 NVS 恢复上次保存的腿部默认 X/高度参数。
+  void loadSavedServoConfig();
 
  private:
   WiFiDebugServer();
@@ -41,7 +44,7 @@ class WiFiDebugServer {
   // 处理网页上的重启请求。
   void handleRestart();
 
-  // 处理 IMU 平衡控制指令。
+  // 处理 IMU 平衡控制命令。
   void handleBalanceCommand();
 
   // 处理底层轮速阶跃响应 tau 测试。
@@ -53,7 +56,7 @@ class WiFiDebugServer {
   // 在服务任务中更新 tau 测试状态。
   void updateTauTest();
 
-  // 处理总线舵机调试指令。
+  // 处理总线舵机调试命令。
   void handleServoCommand();
 
   // 生成 HTML 调试页面。
@@ -65,7 +68,7 @@ class WiFiDebugServer {
   // 生成 IMU 姿态接口的 JSON 响应。
   String buildAttitudeJson() const;
 
-  // 处理接收到的电机测试指令。
+  // 处理接收到的电机测试命令。
   void handleMotorCommand();
 
   // 获取当前联网模式标签。

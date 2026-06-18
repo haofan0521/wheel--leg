@@ -146,8 +146,15 @@ String balanceSnapshotJson(const runtime_state::BalanceSnapshot& balance) {
 String servoStatusJson() {
   const auto status = servo::status();
   const auto read_result = servo::lastReadResult();
+  const auto command = runtime_state::servoCommand();
   String json = "{\"initialized\":";
   json += status.initialized ? "true" : "false";
+  json += ",\"targetX\":";
+  json += String(command.target_x);
+  json += ",\"targetHeight\":";
+  json += String(command.target_height);
+  json += ",\"moveTimeMs\":";
+  json += String(command.time_ms);
   json += ",\"rxFlag\":";
   json += String(status.rx_flag);
   json += ",\"expectedLen\":";
@@ -189,11 +196,14 @@ String servoStatusJson() {
 uint32_t g_motor_command_sequence = 0;
 uint32_t g_balance_command_sequence = 0;
 uint32_t g_tau_test_sequence = 0;
-constexpr float kDefaultLegTargetX = 2.0f;
+constexpr float kDefaultLegTargetX = -3.5f;
 constexpr float kDefaultLegHeightCm = 20.0f;
 constexpr char kBalancePrefsNamespace[] = "balance";
 constexpr char kBalancePrefsMagicKey[] = "magic";
 constexpr uint32_t kBalancePrefsMagic = 0xB14AACE1;
+constexpr char kServoPrefsNamespace[] = "servo";
+constexpr char kServoPrefsMagicKey[] = "magic";
+constexpr uint32_t kServoPrefsMagic = 0x5E120001;
 
 struct TauChannelState {
   float threshold_velocity = 0.0f;
@@ -402,6 +412,37 @@ bool saveBalanceCommand(const runtime_state::BalanceCommand& command) {
   return ok;
 }
 
+bool loadSavedServoCommand(runtime_state::ServoCommand& command) {
+  Preferences prefs;
+  if (!prefs.begin(kServoPrefsNamespace, true)) return false;
+
+  const bool valid = prefs.getUInt(kServoPrefsMagicKey, 0) == kServoPrefsMagic;
+  if (valid) {
+    command.target_x = clampFloat(prefs.getFloat("target_x", command.target_x), -5.0f, 10.0f);
+    command.target_height = clampFloat(prefs.getFloat("height", command.target_height), 10.0f, 35.0f);
+    command.time_ms = static_cast<uint16_t>(clampFloat(prefs.getFloat("time_ms", command.time_ms),
+                                                       0.0f,
+                                                       10000.0f));
+  }
+
+  prefs.end();
+  return valid;
+}
+
+bool saveServoCommand(const runtime_state::ServoCommand& command) {
+  Preferences prefs;
+  if (!prefs.begin(kServoPrefsNamespace, false)) return false;
+
+  bool ok = true;
+  ok = prefs.putFloat("target_x", command.target_x) == sizeof(float) && ok;
+  ok = prefs.putFloat("height", command.target_height) == sizeof(float) && ok;
+  ok = prefs.putFloat("time_ms", static_cast<float>(command.time_ms)) == sizeof(float) && ok;
+  ok = prefs.putUInt(kServoPrefsMagicKey, kServoPrefsMagic) == sizeof(uint32_t) && ok;
+
+  prefs.end();
+  return ok;
+}
+
 }  // namespace
 
 WiFiDebugServer& WiFiDebugServer::instance() {
@@ -416,6 +457,7 @@ void WiFiDebugServer::begin() {
   WiFi.persistent(false);
   WiFi.setAutoReconnect(true);
   loadSavedBalanceConfig();
+  loadSavedServoConfig();
   configureRoutes();
   stationConnected_ = connectToStation();
   if (!stationConnected_) startFallbackAccessPoint();
@@ -713,8 +755,15 @@ void WiFiDebugServer::handleServoCommand() {
     command.updated_ms = millis();
     command.sequence++;
     runtime_state::updateServoCommand(command);
+    const bool save_requested = server_.hasArg("save") && server_.arg("save").toInt() != 0;
+    const bool saved = save_requested && saveServoCommand(command);
+    if (save_requested && !saved) {
+      server_.send(500, "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"save failed\"}");
+      return;
+    }
     server_.send(200, "application/json; charset=utf-8",
-                 "{\"ok\":true,\"x\":" + String(target_x) +
+                 String("{\"ok\":true,\"saved\":") + (saved ? "true" : "false") +
+                 ",\"x\":" + String(target_x) +
                  ",\"height\":" + String(height) +
                  ",\"time\":" + String(time_ms) + "}");
     return;
@@ -822,6 +871,11 @@ String WiFiDebugServer::buildDebugPage() const {
     .joystick::after { width: 128px; height: 2px; }
     .joystick-knob { position: absolute; left: 50%; top: 50%; width: 64px; height: 64px; border-radius: 50%; background: #2563eb; transform: translate(-50%, -50%); box-shadow: 0 8px 18px rgba(37,99,235,0.35); touch-action: none; }
     .joystick-value { min-height: 22px; font-size: 14px; color: #475569; }
+    .height-preset { margin-top: 12px; padding: 12px; background: #f8fafc; border-radius: 8px; text-align: left; }
+    .height-preset-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: #334155; font-size: 13px; }
+    .height-preset-value { color: #0f172a; font-size: 20px; font-weight: bold; }
+    .height-preset input[type="range"] { width: 100%; margin: 10px 0 4px; }
+    .height-preset-scale { display: flex; justify-content: space-between; color: #64748b; font-size: 12px; }
   </style>
 </head>
 <body>
@@ -906,15 +960,26 @@ String WiFiDebugServer::buildDebugPage() const {
       <button onclick="readServos()" style="background:#0f766e;">读取位置</button>
       <button onclick="readServoBattery()" style="background:#0369a1;">读取控制板电压</button>
       <h3>高度与简易解算</h3>
+      <div class="height-preset">
+        <div class="height-preset-head">
+          <span>预设高度滑轨</span>
+          <span class="height-preset-value"><span id="legHeightSliderValue">20.0</span> cm</span>
+        </div>
+        <input type="range" id="legHeightSlider" min="20" max="28" step="0.1" value="20">
+        <div class="height-preset-scale"><span>20</span><span>22</span><span>24</span><span>26</span><span>28</span></div>
+        <div class="status" id="legPresetStatus">拟合参数: --</div>
+      </div>
       <div class="balance-grid">
-        <label>中心位置 X (cm)<input type="number" id="legTargetX" value="2.0" step="0.5" min="-5" max="10"></label>
+        <label>中心位置 X (cm)<input type="number" id="legTargetX" value="-3.5" step="0.5" min="-5" max="10"></label>
         <label>预设高度 (cm)<input type="number" id="legHeight" value="20" step="1" min="10" max="35"></label>
         <label>右腿中心<input type="number" id="legRightCenter" value="500" step="10" min="0" max="1000"></label>
         <label>左腿中心<input type="number" id="legLeftCenter" value="500" step="10" min="0" max="1000"></label>
         <label>前后差值<input type="number" id="legPitchMix" value="0" step="10" min="-300" max="300"></label>
       </div>
       <button onclick="applyHeight()" style="background:#0f766e;">应用预设高度</button>
+      <button onclick="saveLegDefaults()" style="background:#0369a1;">保存腿部参数</button>
       <button onclick="applyLegMix()" style="background:#7c3aed;">应用简易解算</button>
+      <div class="status" id="legSaveStatus">腿部参数保存: --</div>
       <div class="status" id="servoStatus">舵机状态: --</div>
     </div>
 
@@ -939,6 +1004,7 @@ String WiFiDebugServer::buildDebugPage() const {
     const yawSign = 1;
     let attitudeInFlight = false;
     let balanceInputsSynced = false;
+    let servoInputsSynced = false;
     let joystickActive = false;
     let joystickVelocity = 0;
     let joystickTurnVelocity = 0;
@@ -946,6 +1012,65 @@ String WiFiDebugServer::buildDebugPage() const {
     let remoteInFlight = false;
     let pendingRemote = null;
     let remoteSequence = 0;
+    const heightBalancePreset = [
+      { h: 20, pitch: 1.2, kp: 1.65, kd: 0.035, kv: 2.0 },
+      { h: 21, pitch: 0.5, kp: 1.68, kd: 0.045, kv: 2.0 },
+      { h: 22, pitch: 0.0, kp: 1.68, kd: 0.050, kv: 2.0 },
+      { h: 23, pitch: -2.0, kp: 1.68, kd: 0.055, kv: 2.0 },
+      { h: 24, pitch: -2.5, kp: 1.70, kd: 0.060, kv: 2.0 },
+      { h: 25, pitch: -4.0, kp: 1.72, kd: 0.065, kv: 2.0 },
+      { h: 26, pitch: -5.5, kp: 1.75, kd: 0.070, kv: 2.0 },
+      { h: 27, pitch: -7.2, kp: 1.82, kd: 0.075, kv: 2.0 },
+      { h: 28, pitch: -8.0, kp: 1.85, kd: 0.080, kv: 2.0 }
+    ];
+    function clampValue(value, minValue, maxValue) {
+      return Math.min(maxValue, Math.max(minValue, value));
+    }
+    function smoothPresetValue(y0, y1, y2, y3, t) {
+      const t2 = t * t;
+      const t3 = t2 * t;
+      return 0.5 * ((2 * y1) + (-y0 + y2) * t +
+        (2 * y0 - 5 * y1 + 4 * y2 - y3) * t2 +
+        (-y0 + 3 * y1 - 3 * y2 + y3) * t3);
+    }
+    function balancePresetForHeight(height) {
+      const h = clampValue(Number(height) || 20, 20, 28);
+      const lowIndex = Math.min(heightBalancePreset.length - 2, Math.max(0, Math.floor(h) - 20));
+      const t = h - heightBalancePreset[lowIndex].h;
+      const p0 = heightBalancePreset[Math.max(0, lowIndex - 1)];
+      const p1 = heightBalancePreset[lowIndex];
+      const p2 = heightBalancePreset[lowIndex + 1];
+      const p3 = heightBalancePreset[Math.min(heightBalancePreset.length - 1, lowIndex + 2)];
+      const value = (key) => smoothPresetValue(p0[key], p1[key], p2[key], p3[key], t);
+      return {
+        height: h,
+        pitch: value('pitch'),
+        kp: value('kp'),
+        kd: value('kd'),
+        kv: value('kv')
+      };
+    }
+    function applyHeightPresetToInputs(height) {
+      const preset = balancePresetForHeight(height);
+      document.getElementById('legHeightSlider').value = preset.height.toFixed(1);
+      document.getElementById('legHeightSliderValue').innerText = preset.height.toFixed(1);
+      document.getElementById('legHeight').value = preset.height.toFixed(1);
+      document.getElementById('balanceTarget').value = preset.pitch.toFixed(2);
+      document.getElementById('balanceKp').value = preset.kp.toFixed(3);
+      document.getElementById('balanceKd').value = preset.kd.toFixed(3);
+      document.getElementById('balanceKv').value = preset.kv.toFixed(3);
+      document.getElementById('legPresetStatus').innerText =
+        '拟合参数: Pitch ' + preset.pitch.toFixed(2) +
+        ' | Kp ' + preset.kp.toFixed(3) +
+        ' | Kd ' + preset.kd.toFixed(3) +
+        ' | Kv ' + preset.kv.toFixed(3);
+      return preset;
+    }
+    async function applyHeightPresetNow() {
+      applyHeightPresetToInputs(document.getElementById('legHeightSlider').value);
+      await applyHeight();
+      await applyBalanceTuning();
+    }
     async function setSpeed(v) { await fetch('/api/motor?side=both&enable=1&v=' + encodeURIComponent(v), { method: 'POST' }); updateStatus(); }
     async function stopMotors() { await fetch('/api/motor?side=both&stop=1', { method: 'POST' }); updateStatus(); }
     async function flushRemoteVelocity() {
@@ -997,7 +1122,8 @@ String WiFiDebugServer::buildDebugPage() const {
       const deadband = 0.08;
       const normalizedX = Math.abs(x) < deadband ? 0 : x;
       const normalizedY = Math.abs(y) < deadband ? 0 : y;
-      joystickVelocity = normalizedY * maxSpeed;
+      // 仅修正网页摇杆前后映射，不改变后端 remote_velocity/左右轮符号约定。
+      joystickVelocity = -normalizedY * maxSpeed;
       joystickTurnVelocity = normalizedX * maxTurnSpeed;
       updateJoystickUi(normalizedX, normalizedY);
     }
@@ -1046,6 +1172,14 @@ String WiFiDebugServer::buildDebugPage() const {
       joystick.addEventListener('pointercancel', () => stopRemoteVelocity());
       joystick.addEventListener('lostpointercapture', () => stopRemoteVelocity());
       window.addEventListener('blur', () => stopRemoteVelocity());
+    }
+    function bindHeightPresetSlider() {
+      const slider = document.getElementById('legHeightSlider');
+      const heightInput = document.getElementById('legHeight');
+      slider.addEventListener('input', () => applyHeightPresetToInputs(slider.value));
+      slider.addEventListener('change', () => applyHeightPresetNow());
+      heightInput.addEventListener('change', () => applyHeightPresetToInputs(heightInput.value));
+      applyHeightPresetToInputs(heightInput.value);
     }
     async function startTauTest() {
       const params = new URLSearchParams({
@@ -1144,6 +1278,16 @@ String WiFiDebugServer::buildDebugPage() const {
       await fetch(`/api/servo?action=set_height&x=${x}&h=${h}&time=${time}`, { method: 'POST' });
       updateStatus();
     }
+    async function saveLegDefaults() {
+      applyHeightPresetToInputs(document.getElementById('legHeight').value);
+      const x = document.getElementById('legTargetX').value;
+      const h = document.getElementById('legHeight').value;
+      const time = servoTime();
+      const res = await fetch(`/api/servo?action=set_height&x=${x}&h=${h}&time=${time}&save=1`, { method: 'POST' });
+      document.getElementById('legSaveStatus').innerText = res.ok ? '腿部参数保存: 已保存，重启后自动恢复' : '腿部参数保存: 失败';
+      await saveBalanceTuning();
+      updateStatus();
+    }
     function motorText(label, m) {
       if (!m) return label + ': --';
       return label + ': 目标 ' + Number(m.targetVelocity).toFixed(2) +
@@ -1206,6 +1350,14 @@ String WiFiDebugServer::buildDebugPage() const {
       document.getElementById('balanceMaxA').value = Number(b.maxAngle).toFixed(1);
       balanceInputsSynced = true;
     }
+    function syncServoInputs(s) {
+      if (!s || servoInputsSynced) return;
+      document.getElementById('legTargetX').value = Number(s.targetX).toFixed(1);
+      document.getElementById('legHeight').value = Number(s.targetHeight).toFixed(1);
+      document.getElementById('servoTime').value = Number(s.moveTimeMs || 500).toFixed(0);
+      applyHeightPresetToInputs(s.targetHeight);
+      servoInputsSynced = true;
+    }
     function updateServoStatus(s) {
       if (!s) {
         document.getElementById('servoStatus').innerText = '舵机状态: --';
@@ -1235,6 +1387,7 @@ String WiFiDebugServer::buildDebugPage() const {
         document.getElementById('balanceStatus').innerHTML = balanceText(data.balance, data.leftMotor, data.rightMotor);
         document.getElementById('tauStatus').innerHTML = tauText(data.tauTest);
         syncBalanceInputs(data.balance);
+        syncServoInputs(data.servo);
         updateServoStatus(data.servo);
       } catch (e) {
         document.getElementById('uptime').innerText = '通信状态: 断开';
@@ -1262,7 +1415,7 @@ String WiFiDebugServer::buildDebugPage() const {
         status.innerText = '姿态通信断开';
       } finally { attitudeInFlight = false; }
     }
-    bindRemoteJoystick(); updateJoystickUi(0, 0); updateStatus(); updateAttitude(); setInterval(updateStatus, 500); setInterval(updateAttitude, 100);
+    bindRemoteJoystick(); bindHeightPresetSlider(); updateJoystickUi(0, 0); updateStatus(); updateAttitude(); setInterval(updateStatus, 500); setInterval(updateAttitude, 100);
   </script>
 </body>
 </html>
@@ -1323,4 +1476,14 @@ void WiFiDebugServer::loadSavedBalanceConfig() {
   command.updated_ms = millis();
   command.sequence = ++g_balance_command_sequence;
   runtime_state::updateBalanceCommand(command);
+}
+
+void WiFiDebugServer::loadSavedServoConfig() {
+  auto command = runtime_state::servoCommand();
+  if (!loadSavedServoCommand(command)) return;
+
+  command.has_height = false;
+  command.updated_ms = millis();
+  command.sequence = 0;
+  runtime_state::updateServoCommand(command);
 }

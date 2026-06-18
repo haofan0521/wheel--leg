@@ -30,8 +30,6 @@ constexpr float kRemoteStopAccelLimit = 30.0f;     // rad/s^2，松手/超时后
 constexpr float kLeftForwardVelocitySign = 1.0f;
 // 仅用于把编码器读数映射为车体前进方向轮速，不改变电机实际输出方向。
 constexpr float kRightForwardVelocitySign = -1.0f;
-constexpr float kDefaultLegTargetX = -3.5f;
-constexpr float kDefaultLegHeightCm = 20.0f;
 constexpr uint16_t kDefaultLegMoveTimeMs = 1000;
 uint32_t g_last_left_motor_command_sequence = 0;
 uint32_t g_last_right_motor_command_sequence = 0;
@@ -368,10 +366,8 @@ void controlTaskEntry(void* /*context*/) {
 
   // 上电自动控制舵机到预设高度进行测试。
   {
-    runtime_state::ServoCommand init_cmd = {};
+    auto init_cmd = runtime_state::servoCommand();
     init_cmd.has_height = true;
-    init_cmd.target_x = kDefaultLegTargetX;
-    init_cmd.target_height = kDefaultLegHeightCm;
     init_cmd.time_ms = kDefaultLegMoveTimeMs;
     init_cmd.updated_ms = millis();
     init_cmd.sequence = 1;
@@ -497,6 +493,7 @@ void begin() {
   }
 
   runtime_state::begin();
+  WiFiDebugServer::instance().loadSavedServoConfig();
 
   const BaseType_t control_result = xTaskCreatePinnedToCore(
       controlTaskEntry,

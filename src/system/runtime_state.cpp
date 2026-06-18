@@ -19,7 +19,7 @@ constexpr float kDefaultBalanceStartAngleDeg = 10.0f;
 constexpr float kDefaultBalanceMaxAngleDeg = 35.0f;
 constexpr float kDefaultRemoteVelocity = 0.0f;
 constexpr float kDefaultRemoteTurnVelocity = 0.0f;
-constexpr float kDefaultLegTargetX = 2.0f;
+constexpr float kDefaultLegTargetX = -3.5f;
 constexpr float kDefaultLegHeightCm = 20.0f;
 constexpr uint16_t kDefaultLegMoveTimeMs = 500;
 
