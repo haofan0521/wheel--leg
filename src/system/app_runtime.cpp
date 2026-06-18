@@ -121,6 +121,11 @@ void applyBalanceCommand() {
     config.kp = command.kp;
     config.kd = command.kd;
     config.kv = command.kv;
+    config.use_lqr = command.use_lqr;
+    config.lqr_pitch = command.lqr_pitch;
+    config.lqr_pitch_rate = command.lqr_pitch_rate;
+    config.lqr_wheel_velocity = command.lqr_wheel_velocity;
+    config.lqr_output_slew_rate = command.lqr_output_slew_rate;
     config.output_direction = command.output_direction;
     config.max_velocity = command.max_velocity;
     config.start_angle_deg = command.start_angle_deg;
@@ -206,6 +211,11 @@ void fillBalanceSnapshot(runtime_state::BalanceSnapshot& snapshot,
   snapshot.kp = output.kp;
   snapshot.kd = output.kd;
   snapshot.kv = output.kv;
+  snapshot.use_lqr = output.use_lqr;
+  snapshot.lqr_pitch = output.lqr_pitch;
+  snapshot.lqr_pitch_rate = output.lqr_pitch_rate;
+  snapshot.lqr_wheel_velocity = output.lqr_wheel_velocity;
+  snapshot.lqr_output_slew_rate = output.lqr_output_slew_rate;
   snapshot.output_direction = output.output_direction;
   snapshot.max_velocity = output.max_velocity;
   snapshot.start_angle_deg = output.start_angle_deg;
@@ -223,14 +233,14 @@ void emitBalanceTelemetryCsv(const uint32_t loop_counter,
   if (loop_counter % app_runtime_config::kVofaTelemetryDecimation != 0) return;
 
   if (!g_balance_telemetry_header_printed) {
-    Serial.println("time_ms,loop_counter,pitch_deg,target_pitch_deg,pitch_rate_dps,wheel_velocity,output_velocity,balance_enabled,balance_active,balance_fault,kp,kd,kv,direction,max_velocity,left_target_velocity,left_measured_velocity,right_target_velocity,right_measured_velocity,left_forward_velocity,right_forward_velocity");
+    Serial.println("time_ms,loop_counter,pitch_deg,target_pitch_deg,pitch_rate_dps,wheel_velocity,output_velocity,balance_enabled,balance_active,balance_fault,kp,kd,kv,use_lqr,lqr_pitch,lqr_pitch_rate,lqr_wheel_velocity,lqr_output_slew_rate,direction,max_velocity,left_target_velocity,left_measured_velocity,right_target_velocity,right_measured_velocity,left_forward_velocity,right_forward_velocity");
     g_balance_telemetry_header_printed = true;
   }
 
   const float left_forward_velocity = left_motor_status.measured_velocity * kLeftForwardVelocitySign;
   const float right_forward_velocity = right_motor_status.measured_velocity * kRightForwardVelocitySign;
 
-  Serial.printf("%lu,%lu,%.4f,%.4f,%.4f,%.4f,%.4f,%u,%u,%u,%.5f,%.5f,%.5f,%.1f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n",
+  Serial.printf("%lu,%lu,%.4f,%.4f,%.4f,%.4f,%.4f,%u,%u,%u,%.5f,%.5f,%.5f,%u,%.6f,%.6f,%.6f,%.3f,%.1f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n",
                 static_cast<unsigned long>(now_ms),
                 static_cast<unsigned long>(loop_counter),
                 balance_output.pitch_deg,
@@ -244,6 +254,11 @@ void emitBalanceTelemetryCsv(const uint32_t loop_counter,
                 balance_output.kp,
                 balance_output.kd,
                 balance_output.kv,
+                balance_output.use_lqr ? 1U : 0U,
+                balance_output.lqr_pitch,
+                balance_output.lqr_pitch_rate,
+                balance_output.lqr_wheel_velocity,
+                balance_output.lqr_output_slew_rate,
                 balance_output.output_direction,
                 balance_output.max_velocity,
                 left_motor_status.target_velocity,

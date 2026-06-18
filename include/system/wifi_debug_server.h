@@ -44,8 +44,14 @@ class WiFiDebugServer {
   // 处理 IMU 平衡控制指令。
   void handleBalanceCommand();
 
+  // 处理底层轮速阶跃响应 tau 测试。
+  void handleTauTestCommand();
+
   // 从 NVS 恢复上次保存的平衡参数，只恢复调参值，不自动开启平衡。
   void loadSavedBalanceConfig();
+
+  // 在服务任务中更新 tau 测试状态。
+  void updateTauTest();
 
   // 处理总线舵机调试指令。
   void handleServoCommand();

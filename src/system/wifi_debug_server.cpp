@@ -101,12 +101,15 @@ String motorSnapshotJson(const runtime_state::MotorSnapshot& motor) {
 }
 
 String balanceSnapshotJson(const runtime_state::BalanceSnapshot& balance) {
-  char buffer[512];
+  char buffer[768];
   snprintf(buffer, sizeof(buffer),
            "{\"enabled\":%s,\"active\":%s,\"fault\":%s,"
            "\"targetPitch\":%.3f,\"pitch\":%.3f,\"pitchRate\":%.3f,"
            "\"wheelVelocity\":%.3f,\"outputVelocity\":%.3f,"
-           "\"kp\":%.4f,\"kd\":%.4f,\"kv\":%.4f,\"direction\":%.1f,"
+           "\"kp\":%.4f,\"kd\":%.4f,\"kv\":%.4f,"
+           "\"useLqr\":%s,\"lqrPitch\":%.6f,\"lqrPitchRate\":%.6f,\"lqrWheelVelocity\":%.6f,"
+           "\"lqrOutputSlewRate\":%.3f,"
+           "\"direction\":%.1f,"
            "\"maxVelocity\":%.3f,\"startAngle\":%.3f,\"maxAngle\":%.3f,\"lastUpdateMs\":%lu}",
            balance.enabled ? "true" : "false",
            balance.active ? "true" : "false",
@@ -119,6 +122,11 @@ String balanceSnapshotJson(const runtime_state::BalanceSnapshot& balance) {
            balance.kp,
            balance.kd,
            balance.kv,
+           balance.use_lqr ? "true" : "false",
+           balance.lqr_pitch,
+           balance.lqr_pitch_rate,
+           balance.lqr_wheel_velocity,
+           balance.lqr_output_slew_rate,
            balance.output_direction,
            balance.max_velocity,
            balance.start_angle_deg,
@@ -172,11 +180,169 @@ String servoStatusJson() {
 
 uint32_t g_motor_command_sequence = 0;
 uint32_t g_balance_command_sequence = 0;
+uint32_t g_tau_test_sequence = 0;
 constexpr float kDefaultLegTargetX = 2.0f;
 constexpr float kDefaultLegHeightCm = 20.0f;
 constexpr char kBalancePrefsNamespace[] = "balance";
 constexpr char kBalancePrefsMagicKey[] = "magic";
 constexpr uint32_t kBalancePrefsMagic = 0xB14AACE1;
+
+struct TauChannelState {
+  float threshold_velocity = 0.0f;
+  float start_velocity = 0.0f;
+  float final_velocity = 0.0f;
+  float measured_velocity = 0.0f;
+  float tau_ms = 0.0f;
+  bool reached = false;
+  uint32_t reached_ms = 0;
+};
+
+struct TauTestState {
+  bool running = false;
+  bool done = false;
+  bool command_posted = false;
+  float target_velocity = 0.0f;
+  TauChannelState left;
+  TauChannelState right;
+  TauChannelState average;
+  uint32_t start_ms = 0;
+  uint32_t duration_ms = 0;
+  uint32_t arm_ms = 0;
+  uint32_t sequence = 0;
+};
+
+TauTestState g_tau_test;
+
+float leftForwardWheelVelocity(const runtime_state::SystemSnapshot& state) {
+  return state.control.left_motor.measured_velocity;
+}
+
+float rightForwardWheelVelocity(const runtime_state::SystemSnapshot& state) {
+  return -state.control.right_motor.measured_velocity;
+}
+
+float averageForwardWheelVelocity(const runtime_state::SystemSnapshot& state) {
+  // 与 app_runtime.cpp 中的 wheel_velocity 方向约定保持一致：
+  // 左轮实测速度直接作为车体前进方向，右轮实测速度取反后作为车体前进方向。
+  return 0.5f * (leftForwardWheelVelocity(state) + rightForwardWheelVelocity(state));
+}
+
+void resetTauChannel(TauChannelState& channel,
+                     const float start_velocity,
+                     const float target_velocity) {
+  channel.start_velocity = start_velocity;
+  channel.measured_velocity = start_velocity;
+  channel.threshold_velocity = start_velocity + 0.632f * (target_velocity - start_velocity);
+  channel.final_velocity = start_velocity;
+  channel.tau_ms = 0.0f;
+  channel.reached = false;
+  channel.reached_ms = 0;
+}
+
+void updateTauChannel(TauChannelState& channel,
+                      const float measured_velocity,
+                      const float target_velocity,
+                      const uint32_t now_ms,
+                      const uint32_t start_ms) {
+  channel.measured_velocity = measured_velocity;
+  const bool positive_step = target_velocity >= channel.start_velocity;
+  const bool reached = positive_step ?
+                       measured_velocity >= channel.threshold_velocity :
+                       measured_velocity <= channel.threshold_velocity;
+  if (!channel.reached && reached) {
+    channel.reached = true;
+    channel.reached_ms = now_ms;
+    channel.tau_ms = static_cast<float>(now_ms - start_ms);
+  }
+}
+
+String tauChannelJson(const TauChannelState& channel) {
+  char buffer[192];
+  snprintf(buffer, sizeof(buffer),
+           "{\"reached\":%s,\"startVelocity\":%.3f,\"measuredVelocity\":%.3f,"
+           "\"thresholdVelocity\":%.3f,\"finalVelocity\":%.3f,\"tauMs\":%.1f}",
+           channel.reached ? "true" : "false",
+           channel.start_velocity,
+           channel.measured_velocity,
+           channel.threshold_velocity,
+           channel.final_velocity,
+           channel.tau_ms);
+  return String(buffer);
+}
+
+void resetMotorCommandForTau(runtime_state::MotorCommand& command,
+                             const float target_velocity,
+                             const uint32_t now_ms,
+                             const uint32_t sequence) {
+  command.stop = false;
+  command.enable = true;
+  command.has_enable = true;
+  command.has_velocity_target = true;
+  command.has_voltage_limit = false;
+  command.has_open_loop = false;
+  command.has_tuning = false;
+  command.open_loop = false;
+  command.target_velocity = target_velocity;
+  command.updated_ms = now_ms;
+  command.sequence = sequence;
+}
+
+void postBothMotorVelocityForTau(const float target_velocity) {
+  const uint32_t now_ms = millis();
+  const uint32_t sequence = ++g_motor_command_sequence;
+
+  auto left_command = runtime_state::leftMotorCommand();
+  auto right_command = runtime_state::rightMotorCommand();
+  resetMotorCommandForTau(left_command, target_velocity, now_ms, sequence);
+  resetMotorCommandForTau(right_command, target_velocity, now_ms, sequence);
+  runtime_state::updateLeftMotorCommand(left_command);
+  runtime_state::updateRightMotorCommand(right_command);
+}
+
+void stopBothMotorsForTau() {
+  const uint32_t now_ms = millis();
+  const uint32_t sequence = ++g_motor_command_sequence;
+
+  auto left_command = runtime_state::leftMotorCommand();
+  auto right_command = runtime_state::rightMotorCommand();
+  resetMotorCommandForTau(left_command, 0.0f, now_ms, sequence);
+  resetMotorCommandForTau(right_command, 0.0f, now_ms, sequence);
+  left_command.stop = true;
+  right_command.stop = true;
+  runtime_state::updateLeftMotorCommand(left_command);
+  runtime_state::updateRightMotorCommand(right_command);
+}
+
+String tauTestJson() {
+  char buffer[384];
+  snprintf(buffer, sizeof(buffer),
+           "{\"running\":%s,\"done\":%s,\"reached\":%s,"
+           "\"targetVelocity\":%.3f,\"startVelocity\":%.3f,\"measuredVelocity\":%.3f,"
+           "\"thresholdVelocity\":%.3f,\"finalVelocity\":%.3f,"
+           "\"tauMs\":%.1f,\"elapsedMs\":%lu,\"durationMs\":%lu,\"armed\":%s,\"sequence\":%lu",
+           g_tau_test.running ? "true" : "false",
+           g_tau_test.done ? "true" : "false",
+           g_tau_test.average.reached ? "true" : "false",
+           g_tau_test.target_velocity,
+           g_tau_test.average.start_velocity,
+           g_tau_test.average.measured_velocity,
+           g_tau_test.average.threshold_velocity,
+           g_tau_test.average.final_velocity,
+           g_tau_test.average.tau_ms,
+           (unsigned long)(g_tau_test.running && g_tau_test.command_posted ? millis() - g_tau_test.start_ms : 0),
+           (unsigned long)g_tau_test.duration_ms,
+           g_tau_test.command_posted ? "true" : "false",
+           (unsigned long)g_tau_test.sequence);
+  String json(buffer);
+  json += ",\"left\":";
+  json += tauChannelJson(g_tau_test.left);
+  json += ",\"right\":";
+  json += tauChannelJson(g_tau_test.right);
+  json += ",\"average\":";
+  json += tauChannelJson(g_tau_test.average);
+  json += "}";
+  return json;
+}
 
 bool loadSavedBalanceCommand(runtime_state::BalanceCommand& command) {
   Preferences prefs;
@@ -188,6 +354,11 @@ bool loadSavedBalanceCommand(runtime_state::BalanceCommand& command) {
     command.kp = clampFloat(prefs.getFloat("kp", command.kp), -20.0f, 20.0f);
     command.kd = clampFloat(prefs.getFloat("kd", command.kd), -5.0f, 5.0f);
     command.kv = clampFloat(prefs.getFloat("kv", command.kv), 0.0f, 5.0f);
+    command.use_lqr = prefs.getBool("use_lqr", command.use_lqr);
+    command.lqr_pitch = clampFloat(prefs.getFloat("lqr_p", command.lqr_pitch), -500.0f, 500.0f);
+    command.lqr_pitch_rate = clampFloat(prefs.getFloat("lqr_d", command.lqr_pitch_rate), -100.0f, 100.0f);
+    command.lqr_wheel_velocity = clampFloat(prefs.getFloat("lqr_v", command.lqr_wheel_velocity), -20.0f, 20.0f);
+    command.lqr_output_slew_rate = clampFloat(prefs.getFloat("lqr_slew", command.lqr_output_slew_rate), 10.0f, 500.0f);
     command.output_direction = prefs.getFloat("dir", command.output_direction) >= 0.0f ? 1.0f : -1.0f;
     command.max_velocity = clampFloat(prefs.getFloat("maxv", command.max_velocity), 0.2f, 20.0f);
     command.start_angle_deg = clampFloat(prefs.getFloat("starta", command.start_angle_deg), 1.0f, 30.0f);
@@ -208,6 +379,11 @@ bool saveBalanceCommand(const runtime_state::BalanceCommand& command) {
   ok = prefs.putFloat("kp", command.kp) == sizeof(float) && ok;
   ok = prefs.putFloat("kd", command.kd) == sizeof(float) && ok;
   ok = prefs.putFloat("kv", command.kv) == sizeof(float) && ok;
+  ok = prefs.putBool("use_lqr", command.use_lqr) > 0 && ok;
+  ok = prefs.putFloat("lqr_p", command.lqr_pitch) == sizeof(float) && ok;
+  ok = prefs.putFloat("lqr_d", command.lqr_pitch_rate) == sizeof(float) && ok;
+  ok = prefs.putFloat("lqr_v", command.lqr_wheel_velocity) == sizeof(float) && ok;
+  ok = prefs.putFloat("lqr_slew", command.lqr_output_slew_rate) == sizeof(float) && ok;
   ok = prefs.putFloat("dir", command.output_direction) == sizeof(float) && ok;
   ok = prefs.putFloat("maxv", command.max_velocity) == sizeof(float) && ok;
   ok = prefs.putFloat("starta", command.start_angle_deg) == sizeof(float) && ok;
@@ -242,6 +418,7 @@ void WiFiDebugServer::begin() {
 void WiFiDebugServer::loop() {
   if (!started_) return;
   server_.handleClient();
+  updateTauTest();
 }
 
 void WiFiDebugServer::configureRoutes() {
@@ -251,6 +428,7 @@ void WiFiDebugServer::configureRoutes() {
   server_.on("/api/restart", HTTP_POST, [this]() { handleRestart(); });
   server_.on("/api/motor", HTTP_POST, [this]() { handleMotorCommand(); });
   server_.on("/api/balance", HTTP_POST, [this]() { handleBalanceCommand(); });
+  server_.on("/api/tau_test", HTTP_POST, [this]() { handleTauTestCommand(); });
   server_.on("/api/servo", HTTP_POST, [this]() { handleServoCommand(); });
   server_.onNotFound([this]() { server_.send(404, "text/plain", "Not Found"); });
 }
@@ -333,7 +511,9 @@ void WiFiDebugServer::handleBalanceCommand() {
     command.has_enable = true;
   }
   if (server_.hasArg("target") || server_.hasArg("kp") || server_.hasArg("kd") ||
-      server_.hasArg("kv") ||
+      server_.hasArg("kv") || server_.hasArg("lqr") || server_.hasArg("mode") ||
+      server_.hasArg("lqrp") || server_.hasArg("lqrd") || server_.hasArg("lqrv") ||
+      server_.hasArg("lqrslew") ||
       server_.hasArg("dir") || server_.hasArg("maxv") || server_.hasArg("starta") ||
       server_.hasArg("maxa") || server_.hasArg("save")) {
     const auto state = runtime_state::snapshot();
@@ -347,6 +527,22 @@ void WiFiDebugServer::handleBalanceCommand() {
                  (has_live_config ? balance.kd : command.kd);
     command.kv = server_.hasArg("kv") ? clampFloat(server_.arg("kv").toFloat(), 0.0f, 5.0f) :
                  (has_live_config ? balance.kv : command.kv);
+    if (server_.hasArg("mode")) {
+      const String mode = server_.arg("mode");
+      command.use_lqr = mode == "lqr" || mode == "LQR" || mode == "1";
+    } else if (server_.hasArg("lqr")) {
+      command.use_lqr = server_.arg("lqr").toInt() != 0;
+    } else {
+      command.use_lqr = has_live_config ? balance.use_lqr : command.use_lqr;
+    }
+    command.lqr_pitch = server_.hasArg("lqrp") ? clampFloat(server_.arg("lqrp").toFloat(), -500.0f, 500.0f) :
+                        (has_live_config ? balance.lqr_pitch : command.lqr_pitch);
+    command.lqr_pitch_rate = server_.hasArg("lqrd") ? clampFloat(server_.arg("lqrd").toFloat(), -100.0f, 100.0f) :
+                             (has_live_config ? balance.lqr_pitch_rate : command.lqr_pitch_rate);
+    command.lqr_wheel_velocity = server_.hasArg("lqrv") ? clampFloat(server_.arg("lqrv").toFloat(), -20.0f, 20.0f) :
+                                 (has_live_config ? balance.lqr_wheel_velocity : command.lqr_wheel_velocity);
+    command.lqr_output_slew_rate = server_.hasArg("lqrslew") ? clampFloat(server_.arg("lqrslew").toFloat(), 10.0f, 500.0f) :
+                                   (has_live_config ? balance.lqr_output_slew_rate : command.lqr_output_slew_rate);
     command.output_direction = server_.hasArg("dir") ?
                                (server_.arg("dir").toFloat() >= 0.0f ? 1.0f : -1.0f) :
                                (has_live_config ? balance.output_direction : command.output_direction);
@@ -371,6 +567,95 @@ void WiFiDebugServer::handleBalanceCommand() {
   }
   server_.send(200, "application/json; charset=utf-8",
                String("{\"ok\":true,\"saved\":") + (saved ? "true" : "false") + "}");
+}
+
+void WiFiDebugServer::handleTauTestCommand() {
+  if (server_.hasArg("stop")) {
+    stopBothMotorsForTau();
+    g_tau_test.running = false;
+    g_tau_test.done = false;
+    g_tau_test.left.reached = false;
+    g_tau_test.right.reached = false;
+    g_tau_test.average.reached = false;
+    server_.send(200, "application/json; charset=utf-8", "{\"ok\":true,\"stopped\":true}");
+    return;
+  }
+
+  if (g_tau_test.running) {
+    server_.send(409, "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"tau test running\"}");
+    return;
+  }
+
+  // tau 测试会接管左右轮速度命令，测试前先关闭平衡，避免平衡输出叠加干扰阶跃响应。
+  auto balance_command = runtime_state::balanceCommand();
+  balance_command.stop = true;
+  balance_command.enable = false;
+  balance_command.has_enable = true;
+  balance_command.has_tuning = false;
+  balance_command.updated_ms = millis();
+  balance_command.sequence = ++g_balance_command_sequence;
+  runtime_state::updateBalanceCommand(balance_command);
+
+  const auto state = runtime_state::snapshot();
+  const float target_velocity = server_.hasArg("v") ?
+                                clampFloat(server_.arg("v").toFloat(), -6.0f, 6.0f) :
+                                2.0f;
+  const uint32_t duration_ms = server_.hasArg("duration") ?
+                               static_cast<uint32_t>(clampFloat(server_.arg("duration").toFloat(), 500.0f, 8000.0f)) :
+                               2500;
+
+  g_tau_test = {};
+  g_tau_test.running = true;
+  g_tau_test.done = false;
+  g_tau_test.command_posted = false;
+  g_tau_test.target_velocity = target_velocity;
+  resetTauChannel(g_tau_test.left, leftForwardWheelVelocity(state), target_velocity);
+  resetTauChannel(g_tau_test.right, rightForwardWheelVelocity(state), target_velocity);
+  resetTauChannel(g_tau_test.average, averageForwardWheelVelocity(state), target_velocity);
+  g_tau_test.start_ms = millis();
+  g_tau_test.arm_ms = g_tau_test.start_ms;
+  g_tau_test.duration_ms = duration_ms;
+  g_tau_test.sequence = ++g_tau_test_sequence;
+
+  server_.send(200, "application/json; charset=utf-8",
+               String("{\"ok\":true,\"tauTest\":") + tauTestJson() + "}");
+}
+
+void WiFiDebugServer::updateTauTest() {
+  if (!g_tau_test.running) return;
+
+  const uint32_t now_ms = millis();
+  const auto state = runtime_state::snapshot();
+  const float left_velocity = leftForwardWheelVelocity(state);
+  const float right_velocity = rightForwardWheelVelocity(state);
+  const float average_velocity = 0.5f * (left_velocity + right_velocity);
+  g_tau_test.left.measured_velocity = left_velocity;
+  g_tau_test.right.measured_velocity = right_velocity;
+  g_tau_test.average.measured_velocity = average_velocity;
+
+  if (!g_tau_test.command_posted) {
+    if (now_ms - g_tau_test.arm_ms < 120) return;
+    g_tau_test.command_posted = true;
+    g_tau_test.start_ms = now_ms;
+    resetTauChannel(g_tau_test.left, left_velocity, g_tau_test.target_velocity);
+    resetTauChannel(g_tau_test.right, right_velocity, g_tau_test.target_velocity);
+    resetTauChannel(g_tau_test.average, average_velocity, g_tau_test.target_velocity);
+    postBothMotorVelocityForTau(g_tau_test.target_velocity);
+    return;
+  }
+
+  updateTauChannel(g_tau_test.left, left_velocity, g_tau_test.target_velocity, now_ms, g_tau_test.start_ms);
+  updateTauChannel(g_tau_test.right, right_velocity, g_tau_test.target_velocity, now_ms, g_tau_test.start_ms);
+  updateTauChannel(g_tau_test.average, average_velocity, g_tau_test.target_velocity, now_ms, g_tau_test.start_ms);
+
+  if (now_ms - g_tau_test.start_ms >= g_tau_test.duration_ms) {
+    g_tau_test.running = false;
+    g_tau_test.done = true;
+    g_tau_test.left.final_velocity = left_velocity;
+    g_tau_test.right.final_velocity = right_velocity;
+    g_tau_test.average.final_velocity = average_velocity;
+    postBothMotorVelocityForTau(0.0f);
+  }
 }
 
 void WiFiDebugServer::handleServoCommand() {
@@ -519,12 +804,25 @@ String WiFiDebugServer::buildDebugPage() const {
       <button class="btn-rev" onclick="setSpeed(-document.getElementById('speed').value)">反转</button>
       <button class="btn-stop" onclick="stopMotors()">停止</button>
       <div class="status" id="uptime">连接中...</div>
+      <h3>轮速 Tau 测试</h3>
+      <div class="balance-grid">
+        <label>阶跃速度<input type="number" id="tauVelocity" value="2.0" step="0.2"></label>
+        <label>测试时长(ms)<input type="number" id="tauDuration" value="2500" step="500"></label>
+      </div>
+      <button onclick="startTauTest()" style="background:#7c3aed;">开始 Tau 测试</button>
+      <button onclick="stopTauTest()" style="background:#f44336;">停止 Tau 测试</button>
+      <div class="status" id="tauStatus">Tau 测试: --</div>
       <h3>IMU 平衡</h3>
       <div class="balance-grid">
+        <label>控制模式<select id="balanceMode" style="width:100%; font-size:16px; padding:8px; margin-top:4px;"><option value="pid">PID/PD+Kv</option><option value="lqr">LQR</option></select></label>
         <label>目标 Pitch<input type="number" id="balanceTarget" value="0.795" step="0.1"></label>
         <label>Kp<input type="number" id="balanceKp" value="1.69" step="0.05"></label>
         <label>Kd<input type="number" id="balanceKd" value="0.028" step="0.005"></label>
         <label>Kv<input type="number" id="balanceKv" value="0.5" step="0.02"></label>
+        <label>LQR Pitch<input type="number" id="balanceLqrP" value="-119.86971" step="1.0"></label>
+        <label>LQR Pitch Rate<input type="number" id="balanceLqrD" value="-18.810969" step="0.5"></label>
+        <label>LQR Wheel V<input type="number" id="balanceLqrV" value="-1.208787" step="0.05"></label>
+        <label>LQR 爬坡(rad/s²)<input type="number" id="balanceLqrSlew" value="80.0" step="20.0"></label>
         <label>输出方向<input type="number" id="balanceDir" value="-1" step="2"></label>
         <label>最大轮速<input type="number" id="balanceMaxV" value="10.0" step="0.5"></label>
         <label>启动角度<input type="number" id="balanceStartA" value="10.0" step="1.0"></label>
@@ -597,12 +895,29 @@ String WiFiDebugServer::buildDebugPage() const {
     let balanceInputsSynced = false;
     async function setSpeed(v) { await fetch('/api/motor?side=both&enable=1&v=' + encodeURIComponent(v), { method: 'POST' }); updateStatus(); }
     async function stopMotors() { await fetch('/api/motor?side=both&stop=1', { method: 'POST' }); updateStatus(); }
+    async function startTauTest() {
+      const params = new URLSearchParams({
+        v: document.getElementById('tauVelocity').value,
+        duration: document.getElementById('tauDuration').value
+      });
+      await fetch('/api/tau_test?' + params.toString(), { method: 'POST' });
+      updateStatus();
+    }
+    async function stopTauTest() {
+      await fetch('/api/tau_test?stop=1', { method: 'POST' });
+      updateStatus();
+    }
     async function applyBalanceTuning() {
       const params = new URLSearchParams({
         target: document.getElementById('balanceTarget').value,
         kp: document.getElementById('balanceKp').value,
         kd: document.getElementById('balanceKd').value,
         kv: document.getElementById('balanceKv').value,
+        mode: document.getElementById('balanceMode').value,
+        lqrp: document.getElementById('balanceLqrP').value,
+        lqrd: document.getElementById('balanceLqrD').value,
+        lqrv: document.getElementById('balanceLqrV').value,
+        lqrslew: document.getElementById('balanceLqrSlew').value,
         dir: document.getElementById('balanceDir').value,
         maxv: document.getElementById('balanceMaxV').value,
         starta: document.getElementById('balanceStartA').value,
@@ -617,6 +932,11 @@ String WiFiDebugServer::buildDebugPage() const {
         kp: document.getElementById('balanceKp').value,
         kd: document.getElementById('balanceKd').value,
         kv: document.getElementById('balanceKv').value,
+        mode: document.getElementById('balanceMode').value,
+        lqrp: document.getElementById('balanceLqrP').value,
+        lqrd: document.getElementById('balanceLqrD').value,
+        lqrv: document.getElementById('balanceLqrV').value,
+        lqrslew: document.getElementById('balanceLqrSlew').value,
         dir: document.getElementById('balanceDir').value,
         maxv: document.getElementById('balanceMaxV').value,
         starta: document.getElementById('balanceStartA').value,
@@ -675,22 +995,48 @@ String WiFiDebugServer::buildDebugPage() const {
     function balanceText(b) {
       if (!b) return '平衡状态: --';
       return '平衡状态: ' + (b.enabled ? '已开启' : '关闭') +
+        ' | 模式: ' + (b.useLqr ? 'LQR' : 'PID/PD+Kv') +
         ' | 输出: ' + Number(b.outputVelocity).toFixed(2) + ' rad/s<br>' +
         'Pitch: ' + Number(b.pitch).toFixed(2) + '°' +
         ' | Rate: ' + Number(b.pitchRate).toFixed(2) + ' °/s<br>' +
         '轮速: ' + Number(b.wheelVelocity).toFixed(2) + ' rad/s<br>' +
         'Kp/Kd/Kv: ' + Number(b.kp).toFixed(3) + ' / ' + Number(b.kd).toFixed(3) + ' / ' + Number(b.kv).toFixed(3) +
+        '<br>LQR: ' + Number(b.lqrPitch).toFixed(3) + ' / ' +
+        Number(b.lqrPitchRate).toFixed(3) + ' / ' +
+        Number(b.lqrWheelVelocity).toFixed(3) +
+        ' | 爬坡: ' + Number(b.lqrOutputSlewRate).toFixed(1) +
         ' | Dir: ' + Number(b.direction).toFixed(0) + '<br>' +
         '启动/保护角: ' + Number(b.startAngle).toFixed(1) + '° / ' + Number(b.maxAngle).toFixed(1) + '°' +
         ' | 保护: ' + (b.fault ? '触发' : '正常');
     }
+    function tauText(t) {
+      if (!t) return 'Tau 测试: --';
+      const row = (name, c) => {
+        if (!c) return name + ': --';
+        return name + ': ' +
+          'v ' + Number(c.measuredVelocity).toFixed(2) +
+          ' / th ' + Number(c.thresholdVelocity).toFixed(2) +
+          ' | Tau ' + (c.reached ? Number(c.tauMs).toFixed(1) + ' ms' : '--');
+      };
+      return 'Tau 测试: ' + (t.running ? '运行中' : (t.done ? '完成' : '待机')) +
+        ' | 目标: ' + Number(t.targetVelocity).toFixed(2) + ' rad/s' +
+        ' | 经过: ' + Number(t.elapsedMs).toFixed(0) + ' ms<br>' +
+        row('平均', t.average || t) + '<br>' +
+        row('左轮', t.left) + '<br>' +
+        row('右轮', t.right);
+    }
     function syncBalanceInputs(b) {
       if (!b || balanceInputsSynced) return;
       if (!(Number(b.maxVelocity) > 0 && Number(b.maxAngle) > 0)) return;
+      document.getElementById('balanceMode').value = b.useLqr ? 'lqr' : 'pid';
       document.getElementById('balanceTarget').value = Number(b.targetPitch).toFixed(2);
       document.getElementById('balanceKp').value = Number(b.kp).toFixed(3);
       document.getElementById('balanceKd').value = Number(b.kd).toFixed(3);
       document.getElementById('balanceKv').value = Number(b.kv).toFixed(3);
+      document.getElementById('balanceLqrP').value = Number(b.lqrPitch).toFixed(5);
+      document.getElementById('balanceLqrD').value = Number(b.lqrPitchRate).toFixed(5);
+      document.getElementById('balanceLqrV').value = Number(b.lqrWheelVelocity).toFixed(5);
+      document.getElementById('balanceLqrSlew').value = Number(b.lqrOutputSlewRate).toFixed(1);
       document.getElementById('balanceDir').value = Number(b.direction).toFixed(0);
       document.getElementById('balanceMaxV').value = Number(b.maxVelocity).toFixed(2);
       document.getElementById('balanceStartA').value = Number(b.startAngle).toFixed(1);
@@ -724,6 +1070,7 @@ String WiFiDebugServer::buildDebugPage() const {
         const data = await res.json();
         document.getElementById('uptime').innerText = '通信状态: 正常 | 运行: ' + data.uptime + ' | WiFi: ' + data.wifiMode + ' ' + data.ip;
         document.getElementById('balanceStatus').innerHTML = balanceText(data.balance);
+        document.getElementById('tauStatus').innerHTML = tauText(data.tauTest);
         syncBalanceInputs(data.balance);
         updateServoStatus(data.servo);
       } catch (e) {
@@ -768,6 +1115,7 @@ String WiFiDebugServer::buildStatusJson() const {
   json += "\"driveEnabled\":" + String(state.control.drive_enabled ? "true" : "false") + ",";
   json += "\"driveFault\":" + String(state.control.drive_fault_level) + ",";
   json += "\"balance\":" + balanceSnapshotJson(state.control.balance) + ",";
+  json += "\"tauTest\":" + tauTestJson() + ",";
   json += "\"servo\":" + servoStatusJson() + ",";
   json += "\"leftMotor\":" + motorSnapshotJson(state.control.left_motor) + ",";
   json += "\"rightMotor\":" + motorSnapshotJson(state.control.right_motor) + "}";

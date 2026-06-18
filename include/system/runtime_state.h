@@ -55,6 +55,11 @@ struct BalanceCommand {
   float kp;
   float kd;
   float kv;
+  bool use_lqr;
+  float lqr_pitch;
+  float lqr_pitch_rate;
+  float lqr_wheel_velocity;
+  float lqr_output_slew_rate;
   float output_direction;
   float max_velocity;
   float start_angle_deg;
@@ -75,6 +80,11 @@ struct BalanceSnapshot {
   float kp;
   float kd;
   float kv;
+  bool use_lqr;
+  float lqr_pitch;
+  float lqr_pitch_rate;
+  float lqr_wheel_velocity;
+  float lqr_output_slew_rate;
   float output_direction;
   float max_velocity;
   float start_angle_deg;

@@ -1,3 +1,4 @@
+time_ms,loop_counter,pitch_deg,target_pitch_deg,pitch_rate_dps,wheel_velocity,output_velocity,balance_enabled,balance_active,balance_fault,kp,kd,kv,direction,max_velocity,left_target_velocity,left_measured_velocity,right_target_velocity,right_measured_velocity,left_forward_velocity,right_forward_velocity
 726848,357190,1.5144,1.2000,29.2358,2.2247,2.9073,1,1,0,1.65000,0.03500,2.00000,-1.0,20.0000,2.9073,2.2348,2.9073,-2.2538,2.2348,2.2538
 726864,357200,1.8482,1.2000,31.4331,2.4247,2.6796,1,1,0,1.65000,0.03500,2.00000,-1.0,20.0000,2.6796,2.3905,2.6796,-2.4642,2.3905,2.4642
 726881,357210,2.0102,1.2000,20.8130,2.2387,2.4121,1,1,0,1.65000,0.03500,2.00000,-1.0,20.0000,2.4121,2.0889,2.4121,-2.3475,2.0889,2.3475

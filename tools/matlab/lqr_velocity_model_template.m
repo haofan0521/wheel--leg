@@ -27,7 +27,7 @@ Ts = 0.001;  % s，当前工程控制周期为 1 ms
 % 选择 LQR 计算方式：
 %   "rough_model" : 用简化倒立摆 + 速度环模型粗算 K
 %   "identified" : 从实车日志拟合离散 Ad/Bd 后计算 K
-mode = "identified";
+mode = "rough_model";
 
 %% 路径 1：简化速度命令模型
 % 模型：
@@ -36,24 +36,57 @@ mode = "identified";
 %   wheel_v_dot     = (u - wheel_v) / tau
 %
 % 参数含义：
-%   a   : 车身小角度发散强度，越大代表越容易倒
-%   b   : 目标轮速命令对车身角加速度的影响，符号由实车方向决定
+%   a   : 车身小角度发散强度，由 m_body、l_com、I_pitch 估算
+%   wheel_accel_to_theta_ddot : 车轮线加速度对车身角加速度的粗略影响
 %   c   : 车身角速度阻尼
 %   tau : 底层速度环响应时间常数，单位 s
 %
 % 这些值先用于起步，不是最终精确模型。后续应优先用实车日志辨识。
-a = 35.0;
-b = -8.0;
-c = 1.5;
-tau = 0.08;
+% Measured/estimated physical parameters for the rough model.
+% l_com is the wheel axle to whole-robot COM height, currently about 31 cm.
+g = 9.81;
+r_wheel = 0.0255;
+l_com = 0.31;
+M_total = 1.30;
+m_body = 1.02;
+M_base = M_total - m_body;
 
-A_rough = [0,  1,       0;
-           a, -c,       0;
-           0,  0, -1/tau];
+% 轮轴以上机身的俯仰转动惯量，单位 kg*m^2。
+% body_height 是轮轴以上主要质量在竖直方向的尺寸，不是轮轴到质心高度。
+% body_depth 是轮轴以上主要质量在前后方向的尺寸，也就是车体侧视图里的厚度。
+% 第一版按侧视矩形粗估：I = m * (height^2 + depth^2) / 12。
+% 如果暂时没有精确尺寸，可以先测轮轴以上机身外形，再按质量集中区域略微修正。
+body_height = 0.10;
+body_depth = 0.11;
+I_pitch = m_body * (body_height^2 + body_depth^2) / 12;
+
+% WiFi Tau 测试结果，单位 s。
+% 目前稳定结果大约为：左轮 52 ms，右轮 50 ms，平均约 52 ms。
+% 单轨倒立摆粗模型先使用平均 tau；左右轮值保留用于检查两侧速度环一致性。
+tau_left = 0.052;
+tau_right = 0.050;
+tau = 0.5 * (tau_left + tau_right);
+
+J_pitch = I_pitch + m_body * l_com^2;
+a = m_body * g * l_com / J_pitch;
+wheel_accel_to_theta_ddot = m_body * l_com / J_pitch;
+c = 1.5;
+
+A_rough = [0,  1,                 0;
+           a, -c,   wheel_accel_to_theta_ddot * r_wheel / tau;
+           0,  0,            -1/tau];
 
 B_rough = [0;
-           b;
+          -wheel_accel_to_theta_ddot * r_wheel / tau;
            1/tau];
+
+fprintf("rough model parameters:\n");
+fprintf("  r_wheel = %.4f m\n", r_wheel);
+fprintf("  l_com = %.4f m\n", l_com);
+fprintf("  M_total = %.3f kg, m_body = %.3f kg, M_base = %.3f kg\n", M_total, m_body, M_base);
+fprintf("  I_pitch = %.5f kg*m^2, J_pitch = %.5f kg*m^2\n", I_pitch, J_pitch);
+fprintf("  body_height = %.3f m, body_depth = %.3f m\n", body_height, body_depth);
+fprintf("  tau_left = %.4f s, tau_right = %.4f s, tau = %.4f s\n", tau_left, tau_right, tau);
 
 %% 路径 2：从实车日志辨识离散模型
 % 日志 CSV 推荐列名：
@@ -62,7 +95,7 @@ B_rough = [0;
 % pitch_deg 和 pitch_rate_dps 来自固件状态；
 % wheel_velocity 使用固件里归一化后的平均轮速；
 % output_velocity 使用平衡控制器实际输出。
-log_file = "balance_log.csv";
+log_file = "data.csv";
 
 Ad_id = [];
 Bd_id = [];
@@ -198,7 +231,11 @@ end
 %   Q_wheel_velocity 大：更抑制跑车
 %   R 大：输出更保守
 Q = diag([120, 4, 0.8]);
-R = 1.0;
+
+% 第一版实车验证先保守一些。
+% R=2.5 时 5 deg 初始倾角需要约 19 rad/s，已经偏大；
+% R=20 通常会把初始输出压到约 7 rad/s 量级，更适合首次小幅验证。
+R = 20.0;
 
 K = dlqr(Ad, Bd, Q, R);
 
@@ -233,16 +270,61 @@ Acl = Ad - Bd * K;
 fprintf("\nclosed-loop poles:\n");
 disp(eig(Acl));
 
-%% 简单仿真：给一个初始倾角，看输出是否量级合理
+%% 首次上车缩放比例扫描
 x0 = [deg2rad(5.0); 0; 0];
 N = round(2.0 / Ts);
-Xsim = zeros(3, N);
-Usim = zeros(1, N);
-Xsim(:, 1) = x0;
+scale_candidates = 0.10:0.05:1.00;
+scale_table = [];
+for scale = scale_candidates
+    K_scaled = scale * K;
+    Acl_scaled = Ad - Bd * K_scaled;
+    poles_scaled = eig(Acl_scaled);
+    [~, Usim_scaled] = simulateClosedLoop(Ad, Bd, K_scaled, x0, N);
+    scale_table = [scale_table; scale, max(abs(poles_scaled)), max(abs(Usim_scaled))]; %#ok<AGROW>
+end
 
-for k = 1:N-1
-    Usim(k) = -K * Xsim(:, k);
-    Xsim(:, k+1) = Ad * Xsim(:, k) + Bd * Usim(k);
+fprintf("\nfirst-test scale scan:\n");
+fprintf("  scale   max|pole|   max|u| for 5 deg\n");
+for i = 1:size(scale_table, 1)
+    fprintf("  %.2f    %.6f    %.3f rad/s\n", ...
+            scale_table(i, 1), scale_table(i, 2), scale_table(i, 3));
+end
+
+stable_scales = scale_table(scale_table(:, 2) < 1.0, :);
+if isempty(stable_scales)
+    warning("0.10 到 1.00 范围内没有找到稳定缩放比例，请检查模型符号或提高完整 K。");
+    first_test_scale = 1.0;
+else
+    min_stable_scale = stable_scales(1, 1);
+    first_test_scale = min(1.0, min_stable_scale + 0.10);
+end
+
+K_first_test = first_test_scale * K;
+fprintf("\nrecommended first on-car test gains, %.0f%% of K:\n", first_test_scale * 100);
+fprintf("  lqr_pitch = %.8g\n", K_first_test(1));
+fprintf("  lqr_pitch_rate = %.8g\n", K_first_test(2));
+fprintf("  lqr_wheel_velocity = %.8g\n", K_first_test(3));
+
+Acl_first_test = Ad - Bd * K_first_test;
+fprintf("first-test closed-loop poles:\n");
+disp(eig(Acl_first_test));
+
+%% 简单仿真：给一个初始倾角，看输出是否量级合理
+[Xsim, Usim] = simulateClosedLoop(Ad, Bd, K, x0, N);
+[Xsim_first_test, Usim_first_test] = simulateClosedLoop(Ad, Bd, K_first_test, x0, N);
+
+fprintf("\nsimulation check:\n");
+fprintf("  full K max |u| for 5 deg initial pitch = %.3f rad/s\n", max(abs(Usim)));
+fprintf("  first-test K max |u| for 5 deg initial pitch = %.3f rad/s\n", max(abs(Usim_first_test)));
+if max(abs(Usim)) > 10
+    warning("完整 K 的 5 度初始倾角仿真输出超过 10 rad/s，不建议直接上车。首次验证请优先使用 first-test K，并保留固件 max_velocity 限幅。");
+end
+if any(abs(eig(Acl_first_test)) >= 1)
+    warning("first-test K 闭环极点不全在单位圆内，当前缩放比例理论上不能稳定该粗模型。");
+end
+first_test_output_warning = 12.0;
+if max(abs(Usim_first_test)) > first_test_output_warning
+    warning("first-test K 的 5 度初始倾角仿真输出超过 %.1f rad/s。首次上车应保留较小 max_velocity 限幅，并先验证符号。", first_test_output_warning);
 end
 
 t = (0:N-1) * Ts;
@@ -280,4 +362,14 @@ end
 
 function ok = tableHasVar(data, name)
     ok = any(strcmp(string(data.Properties.VariableNames), string(name)));
+end
+
+function [Xsim, Usim] = simulateClosedLoop(Ad, Bd, K, x0, N)
+    Xsim = zeros(3, N);
+    Usim = zeros(1, N);
+    Xsim(:, 1) = x0;
+    for k = 1:N-1
+        Usim(k) = -K * Xsim(:, k);
+        Xsim(:, k+1) = Ad * Xsim(:, k) + Bd * Usim(k);
+    end
 end
