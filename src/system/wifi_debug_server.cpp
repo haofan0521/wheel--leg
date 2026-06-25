@@ -901,11 +901,11 @@ String WiFiDebugServer::buildDebugPage() const {
       <h3>IMU 平衡</h3>
       <div class="input-grp">
         <label>前后速度 (rad/s): </label>
-        <input type="number" id="remoteSpeed" value="0.8" step="0.1" min="0" max="5" style="font-size: 18px; width: 90px; text-align: center;">
+        <input type="number" id="remoteSpeed" value="5" step="0.1" min="0" max="5" style="font-size: 18px; width: 90px; text-align: center;">
       </div>
       <div class="input-grp">
         <label>转向速度 (rad/s): </label>
-        <input type="number" id="remoteTurnSpeed" value="0.5" step="0.1" min="0" max="5" style="font-size: 18px; width: 90px; text-align: center;">
+        <input type="number" id="remoteTurnSpeed" value="5" step="0.1" min="0" max="5" style="font-size: 18px; width: 90px; text-align: center;">
       </div>
       <div class="joystick-wrap">
         <div class="joystick" id="remoteJoystick">
@@ -919,10 +919,10 @@ String WiFiDebugServer::buildDebugPage() const {
         <label>Kp<input type="number" id="balanceKp" value="1.69" step="0.05"></label>
         <label>Kd<input type="number" id="balanceKd" value="0.028" step="0.005"></label>
         <label>Kv<input type="number" id="balanceKv" value="0.5" step="0.02"></label>
-        <label>LQR Pitch<input type="number" id="balanceLqrP" value="-119.86971" step="1.0"></label>
+        <label>LQR Pitch<input type="number" id="balanceLqrP" value="120.86971" step="1.0"></label>
         <label>LQR Pitch Rate<input type="number" id="balanceLqrD" value="-18.810969" step="0.5"></label>
         <label>LQR Wheel V<input type="number" id="balanceLqrV" value="-1.208787" step="0.05"></label>
-        <label>LQR 爬坡(rad/s²)<input type="number" id="balanceLqrSlew" value="80.0" step="20.0"></label>
+        <label>LQR 爬坡(rad/s²)<input type="number" id="balanceLqrSlew" value="120.0" step="20.0"></label>
         <label>输出方向<input type="number" id="balanceDir" value="-1" step="2"></label>
         <label>最大轮速<input type="number" id="balanceMaxV" value="10.0" step="0.5"></label>
         <label>启动角度<input type="number" id="balanceStartA" value="10.0" step="1.0"></label>
@@ -948,7 +948,7 @@ String WiFiDebugServer::buildDebugPage() const {
       <h3>幻尔总线舵机</h3>
       <div class="input-grp">
         <label>移动时间 (ms): </label>
-        <input type="number" id="servoTime" value="500" step="100" min="0" max="10000" style="font-size: 16px; width: 90px; text-align: center;">
+        <input type="number" id="servoTime" value="100" step="100" min="0" max="10000" style="font-size: 16px; width: 90px; text-align: center;">
       </div>
       <div class="servo-grid">
         <div class="servo-item">ID 1<input type="number" id="servoPos1" value="500" step="10" min="0" max="1000"><button onclick="moveServo(1)" style="background:#2563eb;">移动</button><div id="servoRead1">位置: --</div></div>
@@ -1116,16 +1116,22 @@ String WiFiDebugServer::buildDebugPage() const {
       label.innerText = '前后: ' + joystickVelocity.toFixed(2) +
         ' | 转向: ' + joystickTurnVelocity.toFixed(2) + ' rad/s';
     }
+    function shapeJoystickAxis(value, deadband) {
+      const absValue = Math.abs(value);
+      if (absValue <= deadband) return 0;
+      const remapped = (absValue - deadband) / (1 - deadband);
+      return Math.sign(value) * remapped * remapped;
+    }
     function setJoystickVelocity(x, y) {
       const maxSpeed = Math.abs(Number(document.getElementById('remoteSpeed').value || 0));
       const maxTurnSpeed = Math.abs(Number(document.getElementById('remoteTurnSpeed').value || 0));
-      const deadband = 0.08;
-      const normalizedX = Math.abs(x) < deadband ? 0 : x;
-      const normalizedY = Math.abs(y) < deadband ? 0 : y;
-      // 仅修正网页摇杆前后映射，不改变后端 remote_velocity/左右轮符号约定。
-      joystickVelocity = -normalizedY * maxSpeed;
-      joystickTurnVelocity = normalizedX * maxTurnSpeed;
-      updateJoystickUi(normalizedX, normalizedY);
+      const deadband = 0.12;
+      const shapedX = shapeJoystickAxis(x, deadband);
+      const shapedY = shapeJoystickAxis(y, deadband);
+      // 摇杆显示保留物理位移，速度命令使用死区重映射和二次曲线，便于小速度微调。
+      joystickVelocity = -shapedY * maxSpeed;
+      joystickTurnVelocity = shapedX * maxTurnSpeed;
+      updateJoystickUi(x, y);
     }
     function updateJoystickFromPointer(event) {
       const joystick = document.getElementById('remoteJoystick');
@@ -1354,7 +1360,7 @@ String WiFiDebugServer::buildDebugPage() const {
       if (!s || servoInputsSynced) return;
       document.getElementById('legTargetX').value = Number(s.targetX).toFixed(1);
       document.getElementById('legHeight').value = Number(s.targetHeight).toFixed(1);
-      document.getElementById('servoTime').value = Number(s.moveTimeMs || 500).toFixed(0);
+      document.getElementById('servoTime').value = Number(s.moveTimeMs || 100).toFixed(0);
       applyHeightPresetToInputs(s.targetHeight);
       servoInputsSynced = true;
     }

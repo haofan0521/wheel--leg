@@ -55,6 +55,17 @@ float approachValue(const float current, const float target, const float max_del
   return target;
 }
 
+void limitMixedWheelTargets(float& left_target_velocity,
+                            float& right_target_velocity,
+                            const float max_velocity) {
+  const float max_abs = fmaxf(fabsf(left_target_velocity), fabsf(right_target_velocity));
+  if (max_abs <= max_velocity || max_abs <= 0.001f) return;
+
+  const float scale = max_velocity / max_abs;
+  left_target_velocity *= scale;
+  right_target_velocity *= scale;
+}
+
 void applyMotorCommand(const runtime_state::MotorCommand& command,
                        uint32_t& last_sequence,
                        SetOpenLoopFn set_open_loop,
@@ -422,8 +433,9 @@ void controlTaskEntry(void* /*context*/) {
       }
       // 约定：remote_velocity 前进为正，remote_turn_velocity 右转为正。
       // 前后速度进入平衡输出，转向速度只做左右轮差速混控。
-      const float left_target_velocity = balance_output.output_velocity + balance_output.remote_turn_velocity;
-      const float right_target_velocity = balance_output.output_velocity - balance_output.remote_turn_velocity;
+      float left_target_velocity = balance_output.output_velocity + balance_output.remote_turn_velocity;
+      float right_target_velocity = balance_output.output_velocity - balance_output.remote_turn_velocity;
+      limitMixedWheelTargets(left_target_velocity, right_target_velocity, balance_output.max_velocity);
       drive::left_motor_test::setTargetVelocity(left_target_velocity);
       drive::right_motor_test::setTargetVelocity(right_target_velocity);
     } else if (balance_output.fault) {
